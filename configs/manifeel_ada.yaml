@@ -1,0 +1,69 @@
+# VT-WM ManiFeel multi-task training for the ada-24g (RTX 4090) pool, 6-GPU DDP.
+# Test-scale steps; tactile encoder fine-tuned. wandb syncs online (api.bandw.top is
+# reachable from cluster nodes); stdout is also tee'd to logs/ (bind-mounted local).
+
+paths:
+  cosmos_encoder_jit: /run/determined/NAS1/public/wangshuxun/models/cosmos/Cosmos-Tokenize1-CI16x16-360p/encoder.jit
+  sparsh_dino_ckpt: /run/determined/NAS1/public/wangshuxun/models/sparsh/sparsh-dino-base/dino_vitbase.safetensors
+  out_dir: ./runs/manifeel_ada_test1
+
+device: cuda
+
+encoder:
+  tactile: sparsh_gelsight
+  freeze_tactile: false
+
+data:
+  source: manifeel
+  zarr_path: /run/determined/NAS1/public/wangshuxun/manifeel/extracted
+  rgb_key: [front, side, wrist, wrist_2]
+  tactile_keys: [left_tactile_camera_taxim, right_tactile_camera_taxim]
+  action_key: action
+  T: 9
+  num_sensors: 2
+  action_chunk: 1
+  action_dim: 7
+  tactile_num_frames: 2
+  tactile_stride: 5
+  rgb_hw: [192, 320]
+  tactile_hw: [224, 224]
+  val_ratio: 0.02
+
+model:
+  dim: 256
+  depth: 4
+  num_heads: 8
+  mlp_ratio: 4.0
+  max_temporal: 64
+  tactile_dim: 768
+
+train:
+  batch_size: 2          # per-GPU; effective = 2 x 6 GPUs = 12
+  num_workers: 4
+  steps: 300             # test scale
+  warmup_steps: 30
+  peak_lr: 3.0e-4
+  final_lr: 3.0e-7
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  sampling_horizon: 3
+  tactile_lr_scale: 0.1
+  log_every: 5
+  eval_every: 50
+  val_batches: 8
+  save_every: 100
+  seed: 0
+
+wandb:
+  enabled: true
+  project: vt-wm
+  name: ada24g-manifeel-6gpu-test1
+  mode: online           # api.bandw.top reachable from cluster nodes -> live auto-sync
+
+planning:
+  freq: 6
+  horizon_s: 2
+  particles: 36
+  iters: 10
+  elites: 5
+  max_context: 9

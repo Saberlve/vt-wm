@@ -1,0 +1,49 @@
+# VT-WM reproduction config (first runnable version).
+# Encoders frozen; predictor reduced to 4 layers. See plan for deliberate deviations.
+
+paths:
+  cosmos_encoder_jit: /run/determined/NAS1/public/wangshuxun/models/cosmos/Cosmos-Tokenize1-CI16x16-360p/encoder.jit
+  sparshx_ckpt: /run/determined/NAS1/public/wangshuxun/models/sparsh-x/sparsh-x-img/d360_sparshx_img_base.pth
+  out_dir: ./runs/smoke
+
+device: cuda
+
+encoder:
+  tactile: sparshx   # sparshx (Digit360) | sparsh_gelsight (GelSight, for ManiFeel)
+
+data:
+  source: fake       # fake | manifeel
+  T: 9               # context length (frames at 6 fps), paper max context = 9
+  num_sensors: 4     # Digit 360 fingertips
+  action_chunk: 5    # 30Hz / 6Hz -> 5 delta-states per WM step
+  action_dim: 7      # [dx,dy,dz,droll,dpitch,dyaw,gripper] (CEM search space)
+  dataset_len: 64    # fake dataset size
+  rgb_hw: [192, 320]
+  tactile_hw: [224, 224]
+
+model:
+  dim: 256
+  depth: 4           # paper: 12; reduced for first runnable version
+  num_heads: 8
+  mlp_ratio: 4.0
+  max_temporal: 64
+
+train:
+  batch_size: 1
+  steps: 20          # smoke test; paper: 80000
+  warmup_steps: 5    # paper: 10000
+  peak_lr: 3.0e-4
+  final_lr: 3.0e-7
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  sampling_horizon: 3   # H for autoregressive sampling loss (paper H=3-5)
+  log_every: 1
+  seed: 0
+
+planning:           # CEM (Algorithm 1); reduced for the smoke test
+  freq: 6
+  horizon_s: 2
+  particles: 36
+  iters: 10
+  elites: 5
+  max_context: 9

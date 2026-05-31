@@ -1,0 +1,71 @@
+# VT-WM on the UniVTAC benchmark (GelSight Mini tactile via Sparsh-DINO).
+# 2 GelSight sensors (left+right finger), head camera, joint-qpos action (8-dim,
+# 7 arm + 1 gripper; chunk size 1). Predictor 4 layers (first runnable, like manifeel).
+
+paths:
+  cosmos_encoder_jit: /run/determined/NAS1/public/wangshuxun/models/cosmos/Cosmos-Tokenize1-CI16x16-360p/encoder.jit
+  sparsh_dino_ckpt: /run/determined/NAS1/public/wangshuxun/models/sparsh/sparsh-dino-base/dino_vitbase.safetensors
+  out_dir: ./runs/univtac
+
+device: cuda
+
+encoder:
+  tactile: sparsh_gelsight
+  freeze_tactile: false   # fine-tune Sparsh-DINO (paper fine-tunes the tactile encoder)
+
+data:
+  source: univtac
+  # single episode dir (e.g. grasp_classify/clean) or a parent with several {task}/{config} stores
+  data_root: /run/determined/NAS1/public/wangshuxun/UniVTAC/grasp_classify/clean
+  camera: head            # head | wrist
+  tactile_keys: null      # null -> auto-detect (left_gsmini/right_gsmini, else left_tactile/...)
+  tactile_image: rgb_marker
+  T: 9
+  num_sensors: 2
+  action_chunk: 1
+  action_dim: 8           # 7 arm + 1 gripper (joint qpos)
+  tactile_num_frames: 2
+  tactile_stride: 5
+  rgb_hw: [192, 320]
+  tactile_hw: [224, 224]
+  val_ratio: 0.05
+  max_episodes: null      # cap episodes (set small for quick test train)
+
+model:
+  dim: 256
+  depth: 4
+  num_heads: 8
+  mlp_ratio: 4.0
+  max_temporal: 64
+  tactile_dim: 768
+
+train:
+  batch_size: 1
+  num_workers: 4
+  steps: 20
+  warmup_steps: 5
+  peak_lr: 3.0e-4
+  final_lr: 3.0e-7
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  sampling_horizon: 3
+  tactile_lr_scale: 0.1
+  log_every: 1
+  eval_every: 25
+  val_batches: 8
+  save_every: 25
+  seed: 0
+
+wandb:
+  enabled: false
+  project: vt-wm
+  name: null
+  mode: offline
+
+planning:
+  freq: 6
+  horizon_s: 2
+  particles: 36
+  iters: 10
+  elites: 5
+  max_context: 9

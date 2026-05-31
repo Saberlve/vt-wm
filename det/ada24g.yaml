@@ -1,0 +1,37 @@
+# Determined experiment: VT-WM ManiFeel multi-task training, 6-GPU DDP on ada-24g (RTX 4090).
+name: vtwm_manifeel_ada24g_6gpu
+description: VT-WM multi-task ManiFeel training (Cosmos frozen + Sparsh-DINO fine-tuned + predictor), 6-GPU DDP
+workspace: RTX4090
+project: vt-wm
+entrypoint: /home/wangshuxun/VLA/vt-wm/scripts/det_train_ada.sh
+max_restarts: 0
+
+resources:
+  resource_pool: ada-24g
+  slots_per_trial: 6
+  is_single_node: true
+  shm_size: 34359738368
+
+bind_mounts:
+  - host_path: /mount/HOME/wangshuxun
+    container_path: /home/wangshuxun
+  - host_path: /mount/NAS1/public
+    container_path: /run/determined/NAS1/public
+
+environment:
+  image: 10.130.130.5:8192/wangshuxun:ubuntu22-04-cuda12.8-v5-vulkan
+
+checkpoint_storage:
+  type: shared_fs
+  host_path: /mount/NAS1/public
+  storage_path: shuxun
+  save_experiment_best: 0
+  save_trial_best: 1
+  save_trial_latest: 1
+
+searcher:
+  name: single
+  metric: val_loss
+  max_length:
+    epochs: 1
+  smaller_is_better: true
