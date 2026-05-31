@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Third-party dependencies
+third_party/
+
+# Dependency cache
+.univtac_pydeps/
+
+# Model checkpoints & weights
+*.pth
+
+# Evaluation outputs
+eval_out/
+eval_out_univtac/
+
+# Training logs & runs
+logs/
+runs/
+wandb/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
