@@ -27,11 +27,22 @@ def cem_plan(
     elites: int = 5,
     max_context: int = 9,
     device: str = "cuda",
+    mu_init: torch.Tensor | None = None,
+    sigma_init: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, list]:
-    """Returns (best_action_sequence (horizon, action_chunk, action_dim), cost_history)."""
+    """Returns (best_action_sequence (horizon, action_chunk, action_dim), cost_history).
+
+    `mu_init`/`sigma_init` seed the search distribution. They default to the
+    zero-mean/unit-std prior (right for normalized delta actions); for an absolute action
+    space (e.g. joint qpos) pass the current state broadcast over the horizon as `mu_init`
+    and a small per-dim `sigma_init`. Each may be (horizon, chunk, dim) or broadcastable to it.
+    """
     Tc = s_ctx.shape[1]
-    mu = torch.zeros(horizon, action_chunk, action_dim, device=device)
-    sigma = torch.ones(horizon, action_chunk, action_dim, device=device)
+    base = torch.zeros(horizon, action_chunk, action_dim, device=device)
+    mu = base + (mu_init.to(device) if mu_init is not None else 0.0)
+    sigma = (sigma_init.to(device) if sigma_init is not None
+             else torch.ones(horizon, action_chunk, action_dim, device=device))
+    sigma = (base + sigma).clone()
     best_action = None
     best_cost = float("inf")
     cost_history = []
