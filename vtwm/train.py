@@ -14,6 +14,7 @@ import os
 import torch
 import torch.distributed as dist
 from omegaconf import OmegaConf
+from tqdm import tqdm
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -228,6 +229,8 @@ def main():
     if sampler is not None:
         sampler.set_epoch(epoch)
     data_iter = iter(loader)
+    pbar = tqdm(total=cfg.train.steps, initial=step, desc="train",
+                dynamic_ncols=True, disable=not is_main)
     while step < cfg.train.steps:
         try:
             batch = next(data_iter)
@@ -250,9 +253,11 @@ def main():
         gnorm = torch.nn.utils.clip_grad_norm_(clip_params, 1.0)
         opt.step()
 
-        if is_main and step % cfg.train.log_every == 0:
-            print(f"step {step:6d} | lr {lr:.2e} | L {loss.item():.4f} "
-                  f"| teacher {l_teacher.item():.4f} | sampling {l_sampling.item():.4f}", flush=True)
+        if is_main:
+            pbar.set_postfix(L=f"{loss.item():.4f}", lr=f"{lr:.2e}", refresh=False)
+            if step % cfg.train.log_every == 0:
+                tqdm.write(f"step {step:6d} | lr {lr:.2e} | L {loss.item():.4f} "
+                           f"| teacher {l_teacher.item():.4f} | sampling {l_sampling.item():.4f}")
         if use_wandb:
             run.log({"train/loss": loss.item(), "train/teacher": l_teacher.item(),
                      "train/sampling": l_sampling.item(), "train/lr": lr,
@@ -268,12 +273,14 @@ def main():
                                        cfg.train.get("val_action_windows", 4), cfg, amp)
                 log["val/action_mse"] = amse
                 msg += f" | action_mse {amse:.4f}"
-            print(msg, flush=True)
+            tqdm.write(msg)
             if use_wandb:
                 run.log(log, step=step)
         if is_main and cfg.train.get("save_every", 0) and step > 0 and step % cfg.train.save_every == 0:
             save("last.pt")
         step += 1
+        pbar.update(1)
+    pbar.close()
 
     if is_main:
         if val_loader is not None:
