@@ -21,11 +21,12 @@ data:
   tactile_keys: null      # null -> auto-detect (left_gsmini/right_gsmini, else left_tactile/...)
   tactile_image: rgb_marker
   T: 9
+  frame_stride: 10        # source is 60Hz; stride 10 -> ~6Hz vision (T=9 -> ~1.5s window)
   num_sensors: 2
-  action_chunk: 1
+  action_chunk: 10
   action_dim: 8           # 7 arm + 1 gripper (joint qpos)
   tactile_num_frames: 2
-  tactile_stride: 5
+  tactile_stride: 10      # 2-frame current-step stack spans ~0.16s @60Hz (paper tactile window)
   rgb_hw: [192, 320]
   tactile_hw: [224, 224]
   val_ratio: 0.05
@@ -40,21 +41,26 @@ model:
   tactile_dim: 768
 
 train:
-  batch_size: 1
+  batch_size: 64
   num_workers: 4
-  steps: 20
-  warmup_steps: 5
+  steps: 30000
+  warmup_steps: 10000
   peak_lr: 3.0e-4
   final_lr: 3.0e-7
   weight_decay: 0.01
   betas: [0.9, 0.95]
   sampling_horizon: 3
   tactile_lr_scale: 0.1
-  log_every: 1
-  eval_every: 25
-  val_batches: 8
-  save_every: 25
-  seed: 0
+  log_every: 20
+  eval_every: 10000
+  eval_start: 0           # only run validation once step >= eval_start (delay early/noisy evals)
+  val_batches: 8          # # batches for the val state-prediction loss
+  eval_action_mse: true   # also log CEM-planned-vs-GT action MSE on val (val/action_mse)
+  val_action_windows: 4   # # val windows to plan per eval (CEM is heavy: particles*iters rollouts each)
+  val_plan_horizon: 3     # action steps to plan toward the window's final visual latent (<= T-1)
+  val_plan_sigma: 0.1     # CEM init std around the last context action (abs joint-qpos prior)
+  save_every: 2000
+  seed: 42
 
 wandb:
   enabled: false

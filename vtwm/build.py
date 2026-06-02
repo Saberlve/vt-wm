@@ -53,6 +53,7 @@ def build_dataset(cfg, val: bool = False) -> Dataset:
 
         return make_univtac_dataset(
             data_root=cfg.data.data_root, val=val, T=cfg.data.T,
+            frame_stride=cfg.data.get("frame_stride", 1),
             camera=cfg.data.get("camera", "head"),
             tactile_keys=(list(cfg.data.tactile_keys) if cfg.data.get("tactile_keys", None) else None),
             tactile_image=cfg.data.get("tactile_image", "rgb_marker"),

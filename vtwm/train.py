@@ -22,6 +22,7 @@ from vtwm.build import build_dataset, build_tactile_encoder, build_vision_encode
 from vtwm.losses import vtwm_loss
 from vtwm.models.predictor import VTWMPredictor
 from vtwm.models.train_module import VTWMTrainModule
+from vtwm.planning.cem import cem_plan
 
 
 def lr_at(step, warmup, total, peak, final):
@@ -52,6 +53,50 @@ def evaluate(core, vision, val_loader, device, n_batches):
     core.train()
     n = max(1, n)
     return tot / n, tt / n, ts / n
+
+
+@torch.no_grad()
+def action_mse_eval(core, vision, val_loader, device, n_windows, cfg):
+    """Policy-quality metric: the world model has no action output, so we recover one with
+    CEM planning. For each val window, plan the last H action steps to reach the window's
+    final visual latent (goal), then MSE the planned sequence against the demonstrated GT
+    actions. Returns mean per-window action MSE over up to `n_windows` windows.
+    """
+    core.eval()
+    predictor, tactile = core.predictor, core.tactile
+    H_cfg = int(cfg.train.get("val_plan_horizon", cfg.train.sampling_horizon))
+    sigma0 = float(cfg.train.get("val_plan_sigma", 0.1))
+    pcfg = cfg.get("planning", {})
+    se = 0.0
+    n = 0
+    for batch in val_loader:
+        if n >= n_windows:
+            break
+        s = vision.encode(batch["rgb"].to(device))            # (B,T,16,12,20)
+        t = tactile.encode(batch["tactile"].to(device))       # (B,T,4,196,768)
+        a = batch["action"].to(device)                        # (B,T,chunk,dim)
+        B, T = s.shape[:2]
+        H = min(H_cfg, T - 1)
+        Tc = T - H
+        if Tc < 1:
+            continue
+        for b in range(B):
+            if n >= n_windows:
+                break
+            gt_act = a[b, Tc - 1 : T - 1]                      # (H,chunk,dim): drives frames Tc-1..T-2
+            best_action, _ = cem_plan(
+                predictor, s[b : b + 1, :Tc], t[b : b + 1, :Tc], s[b, -1:],
+                horizon=H, action_chunk=cfg.data.action_chunk, action_dim=cfg.data.action_dim,
+                particles=int(pcfg.get("particles", 36)), iters=int(pcfg.get("iters", 10)),
+                elites=int(pcfg.get("elites", 5)), max_context=int(pcfg.get("max_context", 9)),
+                device=device,
+                mu_init=a[b, Tc - 1],                          # seed from last context action (abs qpos prior)
+                sigma_init=torch.tensor(sigma0, device=device),
+            )
+            se += (best_action - gt_act).pow(2).mean().item()
+            n += 1
+    core.train()
+    return se / max(1, n)
 
 
 def main():
@@ -157,6 +202,14 @@ def main():
         }, path)
         return path
 
+    # --- one-time wandb image sanity check (debug): upload 4 RGB frames before training ---
+    if use_wandb:
+        dbg = next(iter(loader))["rgb"]                 # (B,T,3,H,W) in [0,1]
+        flat = dbg.reshape(-1, *dbg.shape[2:])          # (B*T,3,H,W)
+        imgs = flat[:4].clamp(0, 1).cpu()               # first 4 frames
+        run.log({"debug/rgb_batch": [wandb.Image(img) for img in imgs]}, step=step)
+        print(f"[wandb] logged {len(imgs)} debug RGB images (shape {tuple(imgs.shape[1:])})", flush=True)
+
     model.train()
     clip_params = [p for g in groups for p in g["params"]]
     epoch = 0
@@ -192,11 +245,19 @@ def main():
                      "train/sampling": l_sampling.item(), "train/lr": lr,
                      "train/grad_norm": float(gnorm)}, step=step)
 
-        if val_loader is not None and step > 0 and step % cfg.train.eval_every == 0:
+        if (val_loader is not None and step > 0 and step >= cfg.train.get("eval_start", 0)
+                and step % cfg.train.eval_every == 0):
             v, vt, vs = evaluate(core, vision, val_loader, device, cfg.train.get("val_batches", 8))
-            print(f"  [val] step {step} | L {v:.4f} | teacher {vt:.4f} | sampling {vs:.4f}", flush=True)
+            log = {"val/loss": v, "val/teacher": vt, "val/sampling": vs}
+            msg = f"  [val] step {step} | L {v:.4f} | teacher {vt:.4f} | sampling {vs:.4f}"
+            if cfg.train.get("eval_action_mse", True):
+                amse = action_mse_eval(core, vision, val_loader, device,
+                                       cfg.train.get("val_action_windows", 4), cfg)
+                log["val/action_mse"] = amse
+                msg += f" | action_mse {amse:.4f}"
+            print(msg, flush=True)
             if use_wandb:
-                run.log({"val/loss": v, "val/teacher": vt, "val/sampling": vs}, step=step)
+                run.log(log, step=step)
         if is_main and cfg.train.get("save_every", 0) and step > 0 and step % cfg.train.save_every == 0:
             save("last.pt")
         step += 1
@@ -204,9 +265,16 @@ def main():
     if is_main:
         if val_loader is not None:
             v, vt, vs = evaluate(core, vision, val_loader, device, cfg.train.get("val_batches", 8))
-            print(f"[final-val] L {v:.4f} | teacher {vt:.4f} | sampling {vs:.4f}", flush=True)
+            log = {"val/loss": v, "val/teacher": vt, "val/sampling": vs}
+            msg = f"[final-val] L {v:.4f} | teacher {vt:.4f} | sampling {vs:.4f}"
+            if cfg.train.get("eval_action_mse", True):
+                amse = action_mse_eval(core, vision, val_loader, device,
+                                       cfg.train.get("val_action_windows", 4), cfg)
+                log["val/action_mse"] = amse
+                msg += f" | action_mse {amse:.4f}"
+            print(msg, flush=True)
             if use_wandb:
-                run.log({"val/loss": v, "val/teacher": vt, "val/sampling": vs}, step=step)
+                run.log(log, step=step)
         save("last.pt")
         print(f"[saved] {save('predictor.pt')}", flush=True)
         if use_wandb:

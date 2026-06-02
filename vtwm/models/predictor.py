@@ -1,8 +1,8 @@
 """VT-WM autoregressive predictor (transition model).
 
 Architecture (paper sec 3.2.1), with depth reduced for the first runnable version:
-  - vision + tactile latents projected to a unified width d, augmented with sinusoidal
-    positional embeddings, concatenated along the spatial axis into R(b, t, s, d).
+  - vision + tactile latents projected to a unified width d, concatenated along the
+    spatial axis into R(b, t, s, d); positions are encoded only via RoPE in attention.
   - N transformer blocks, each: factorized spatio-temporal self-attention (spatial then
     temporal) on sensory tokens AND on action tokens, followed by action-conditioning
     cross-attention (sensory queries attend to action keys/values), then MLPs.
@@ -18,7 +18,6 @@ import torch
 import torch.nn as nn
 
 from .attention import Mlp, MultiheadCrossAttention, MultiheadSelfAttention
-from .pos_embed import sinusoidal_embedding
 from .projectors import InputProjector, OutputHead
 from .rope import Rope1D
 
@@ -122,10 +121,6 @@ class VTWMPredictor(nn.Module):
         self.tac_head = OutputHead(dim, tactile_dim)
 
         ls = self.vision_tokens + self.tactile_tokens
-        self.register_buffer("spatial_pe_s", sinusoidal_embedding(ls, dim), persistent=False)
-        self.register_buffer("spatial_pe_a", sinusoidal_embedding(action_chunk, dim), persistent=False)
-        self.register_buffer("temporal_pe", sinusoidal_embedding(max_temporal, dim), persistent=False)
-
         head_dim = dim // num_heads
         self.rope_spatial = Rope1D(head_dim, max(ls, action_chunk))
         self.rope_temporal = Rope1D(head_dim, max_temporal)
@@ -141,11 +136,8 @@ class VTWMPredictor(nn.Module):
         sensory = torch.cat([vis, tac], dim=2)  # (B,T,Ls,d)
         act = self.act_proj(a)  # (B,T,5,d)
 
-        sensory = sensory + self.spatial_pe_s[None, None] + self.temporal_pe[:T][None, :, None]
-        act = act + self.spatial_pe_a[None, None] + self.temporal_pe[:T][None, :, None]
-
         for blk in self.blocks:
-            sensory, act = blk(sensory, act, self.rope_spatial, self.rope_temporal)
+            sensory, _ = blk(sensory, act, self.rope_spatial, self.rope_temporal)
 
         vis_out = sensory[:, :, : self.vision_tokens]
         tac_out = sensory[:, :, self.vision_tokens :]

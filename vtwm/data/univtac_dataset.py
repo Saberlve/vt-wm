@@ -4,11 +4,19 @@ Reads UniVTAC episode HDF5 files (the `byml/UniVTAC` benchmark, GelSight Mini se
 and yields trajectory windows shaped exactly like the rest of the VT-WM pipeline expects
 (same contract as `manifeel_dataset.ManiFeelDataset`):
 
-  rgb     : (T, 3, *rgb_hw)            head camera RGB, [0,1]
+  rgb     : (T, 3, *rgb_hw)            head camera RGB, [0,1]; the T frames are sampled
+                                       every `frame_stride` steps so a 60Hz source becomes
+                                       ~6Hz (paper vision rate; T=9 -> ~1.5s window)
   tactile : (T, 2, 6, *tactile_hw)     left+right GelSight `rgb_marker`, Sparsh-style
                                        6-channel = two stride-`tactile_stride` frames,
-                                       background-subtracted (frame - bg + 0.5)
-  action  : (T, 1, action_dim)         next-step joint qpos command (chunk size 1)
+                                       background-subtracted (frame - bg + 0.5). Built ONCE at
+                                       the window's CURRENT (last) step and repeated over all T
+                                       timesteps: tactile stays a short high-frequency contact
+                                       window while vision is downsampled, so the single
+                                       current-step tactile is broadcast across the vision
+                                       horizon before spatial concat (paper sec 2.3).
+  action  : (T, 1, action_dim)         next-step joint qpos command (chunk size 1); "next"
+                                       means the next *downsampled* frame (k + frame_stride)
 
 On-disk layout (one file == one episode, FLAT not nested), each field a length-T array:
 
@@ -57,11 +65,54 @@ def _decode_image(raw) -> np.ndarray:
 
 
 def _resize_hwc(img: np.ndarray, h: int, w: int) -> np.ndarray:
+    """Anisotropic resize to exactly (h, w) — stretches if aspect ratios differ."""
     import cv2
 
     if img.shape[0] != h or img.shape[1] != w:
         img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
     return img
+
+
+def _resize_cover_crop(img: np.ndarray, h: int, w: int) -> np.ndarray:
+    """Aspect-preserving downsample to cover (h, w), then center-crop.
+
+    UniVTAC cameras are 16:9 (480x270) while the frozen Cosmos tokenizer wants
+    5:3 (320x192); a plain resize would squash the image, so we scale to cover
+    the target and crop the (small) horizontal excess instead.
+    """
+    import cv2
+
+    if img.shape[0] == h and img.shape[1] == w:
+        return img
+    ih, iw = img.shape[:2]
+    scale = max(w / iw, h / ih)
+    nh, nw = int(round(ih * scale)), int(round(iw * scale))
+    img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    y0, x0 = (nh - h) // 2, (nw - w) // 2
+    return img[y0:y0 + h, x0:x0 + w]
+
+
+def _resize_contain_pad(img: np.ndarray, h: int, w: int, pad: float = 0.0) -> np.ndarray:
+    """Aspect-preserving downsample to fit inside (h, w), then letterbox-pad."""
+    import cv2
+
+    if img.shape[0] == h and img.shape[1] == w:
+        return img
+    ih, iw = img.shape[:2]
+    scale = min(w / iw, h / ih)
+    nh, nw = int(round(ih * scale)), int(round(iw * scale))
+    img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    out = np.full((h, w, img.shape[2]), pad, dtype=img.dtype)
+    y0, x0 = (h - nh) // 2, (w - nw) // 2
+    out[y0:y0 + nh, x0:x0 + nw] = img
+    return out
+
+
+_RGB_RESIZERS = {
+    "stretch": _resize_hwc,
+    "crop": _resize_cover_crop,
+    "pad": _resize_contain_pad,
+}
 
 
 def find_task_dirs(root: str) -> List[Tuple[str, str]]:
@@ -95,11 +146,13 @@ class UniVTACDataset(Dataset):
         self,
         episode_dir: str,
         T: int = 9,
+        frame_stride: int = 1,
         camera: str = "head",
         tactile_keys: Optional[Tuple[str, ...]] = None,
         tactile_image: str = "rgb_marker",
         action_dim: int = 8,
         rgb_hw=(192, 320),
+        rgb_resize: str = "crop",
         tactile_hw=(224, 224),
         tactile_num_frames: int = 2,
         tactile_stride: int = 5,
@@ -126,11 +179,14 @@ class UniVTACDataset(Dataset):
         self.tactile_image = tactile_image
         self.action_dim = action_dim
         self.rgb_hw = tuple(rgb_hw)
+        assert rgb_resize in _RGB_RESIZERS, f"rgb_resize must be one of {list(_RGB_RESIZERS)}"
+        self._rgb_resize = _RGB_RESIZERS[rgb_resize]
         self.tactile_hw = tuple(tactile_hw)
         self.tactile_num_frames = tactile_num_frames
         self.tactile_stride = tactile_stride
         self.remove_bg = remove_bg
         self.T = T
+        self.frame_stride = max(1, int(frame_stride))
         self._h5: Dict[str, "h5py.File"] = {}  # lazily-opened per-worker file handles
 
         # episode lengths (read once up front) + resolve which schema this store uses
@@ -168,11 +224,13 @@ class UniVTACDataset(Dataset):
         val_idx = set(perm[:n_val].tolist())
         keep = [i for i in range(n_ep) if (i in val_idx) == val]
 
-        # window index: (episode_idx, start_frame) with a full T-window inside the episode
+        # window index: (episode_idx, start_frame). A window spans (T-1)*frame_stride source
+        # steps (downsampled), so a full window must fit inside the episode.
         self.index: List[Tuple[int, int]] = []
+        span = (T - 1) * self.frame_stride
         for ei in keep:
             _, length = self.episodes[ei]
-            for st in range(0, max(1, length - T + 1)):
+            for st in range(0, max(1, length - span)):
                 self.index.append((ei, st))
 
     def __len__(self) -> int:
@@ -189,7 +247,7 @@ class UniVTACDataset(Dataset):
 
     def _rgb_at(self, h, k: int) -> np.ndarray:
         img = _decode_image(h[f"observation/{self.camera}/rgb"][k])
-        img = _resize_hwc(img, *self.rgb_hw)
+        img = self._rgb_resize(img, *self.rgb_hw)
         return np.moveaxis(img, -1, 0)  # CHW
 
     def _tac_frame_6ch(self, h, key: str, ep_start: int, k: int, bg: np.ndarray) -> np.ndarray:
@@ -208,22 +266,27 @@ class UniVTACDataset(Dataset):
         path, length = self.episodes[ei]
         h = self._file(path)
         T = self.T
-        idxs = [min(length - 1, start + t) for t in range(T)]  # clamp-pad short episodes
+        # downsample vision to ~6Hz by striding the source steps; clamp-pad short episodes
+        idxs = [min(length - 1, start + t * self.frame_stride) for t in range(T)]
         ep_start = 0
 
         # vision (head camera) -> (T,3,H,W)
         rgb = np.stack([self._rgb_at(h, k) for k in idxs], 0).astype(np.float32)
 
-        # tactile: S sensors -> (T, S, 6, H, W); zero-filled when the task has no tactile.
+        # tactile: built ONCE at the current (last) step and repeated over all T timesteps.
+        # Vision is downsampled while tactile stays a short high-frequency contact window, so a
+        # single current-step tactile is broadcast across the vision horizon. -> (T, S, 6, H, W);
+        # zero-filled when the task has no tactile.
         ch = 3 * self.tactile_num_frames
         if self.has_tactile:
-            tac_sensors = []
+            cur = idxs[-1]  # latest in-window frame == the "current step"
+            sensors = []
             for key in self.tactile_keys:
                 bg = _decode_image(h[f"tactile/{key}/{self.tactile_image}"][ep_start]) \
                     if self.remove_bg else None
-                frames = np.stack([self._tac_frame_6ch(h, key, ep_start, k, bg) for k in idxs], 0)
-                tac_sensors.append(frames)  # (T,6,H,W)
-            tac = np.stack(tac_sensors, axis=1)  # (T,S,6,H,W)
+                sensors.append(self._tac_frame_6ch(h, key, ep_start, cur, bg))  # (6,H,W)
+            tac_cur = np.stack(sensors, axis=0)            # (S,6,H,W)
+            tac = np.repeat(tac_cur[None], T, axis=0)       # (T,S,6,H,W) — identical each step
         else:
             tac = np.zeros((T, len(self.tactile_keys), ch, *self.tactile_hw), dtype=np.float32)
 
@@ -231,7 +294,7 @@ class UniVTACDataset(Dataset):
         joint = np.asarray(h["embodiment/joint"], dtype=np.float32)  # (length, J)
         act = []
         for k in idxs:
-            nxt = min(length - 1, k + 1)
+            nxt = min(length - 1, k + self.frame_stride)  # next *downsampled* frame
             j = joint[nxt]
             if j.shape[0] < self.action_dim:
                 j = np.pad(j, (0, self.action_dim - j.shape[0]))
