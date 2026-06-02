@@ -41,7 +41,8 @@ model:
   tactile_dim: 768
 
 train:
-  batch_size: 64
+  batch_size_per_gpu: 32   # PER-GPU; global batch = this * num_gpus (DDP shards indices only)
+  precision: bf16          # bf16 autocast (no GradScaler); set fp32/none to disable
   num_workers: 4
   steps: 30000
   warmup_steps: 10000
@@ -63,10 +64,10 @@ train:
   seed: 42
 
 wandb:
-  enabled: false
+  enabled: true
   project: vt-wm
   name: null
-  mode: offline
+  mode: online
 
 planning:
   freq: 6

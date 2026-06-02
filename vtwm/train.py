@@ -40,7 +40,7 @@ def dist_info():
 
 
 @torch.no_grad()
-def evaluate(core, vision, val_loader, device, n_batches):
+def evaluate(core, vision, val_loader, device, n_batches, amp=False):
     core.eval()
     tot = tt = ts = 0.0
     n = 0
@@ -48,7 +48,8 @@ def evaluate(core, vision, val_loader, device, n_batches):
         if i >= n_batches:
             break
         s = vision.encode(batch["rgb"].to(device))
-        loss, l_teacher, l_sampling = core(s, batch["tactile"].to(device), batch["action"].to(device))
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp):
+            loss, l_teacher, l_sampling = core(s, batch["tactile"].to(device), batch["action"].to(device))
         tot += loss.item(); tt += l_teacher.item(); ts += l_sampling.item(); n += 1
     core.train()
     n = max(1, n)
@@ -56,7 +57,7 @@ def evaluate(core, vision, val_loader, device, n_batches):
 
 
 @torch.no_grad()
-def action_mse_eval(core, vision, val_loader, device, n_windows, cfg):
+def action_mse_eval(core, vision, val_loader, device, n_windows, cfg, amp=False):
     """Policy-quality metric: the world model has no action output, so we recover one with
     CEM planning. For each val window, plan the last H action steps to reach the window's
     final visual latent (goal), then MSE the planned sequence against the demonstrated GT
@@ -73,28 +74,29 @@ def action_mse_eval(core, vision, val_loader, device, n_windows, cfg):
         if n >= n_windows:
             break
         s = vision.encode(batch["rgb"].to(device))            # (B,T,16,12,20)
-        t = tactile.encode(batch["tactile"].to(device))       # (B,T,4,196,768)
-        a = batch["action"].to(device)                        # (B,T,chunk,dim)
-        B, T = s.shape[:2]
-        H = min(H_cfg, T - 1)
-        Tc = T - H
-        if Tc < 1:
-            continue
-        for b in range(B):
-            if n >= n_windows:
-                break
-            gt_act = a[b, Tc - 1 : T - 1]                      # (H,chunk,dim): drives frames Tc-1..T-2
-            best_action, _ = cem_plan(
-                predictor, s[b : b + 1, :Tc], t[b : b + 1, :Tc], s[b, -1:],
-                horizon=H, action_chunk=cfg.data.action_chunk, action_dim=cfg.data.action_dim,
-                particles=int(pcfg.get("particles", 36)), iters=int(pcfg.get("iters", 10)),
-                elites=int(pcfg.get("elites", 5)), max_context=int(pcfg.get("max_context", 9)),
-                device=device,
-                mu_init=a[b, Tc - 1],                          # seed from last context action (abs qpos prior)
-                sigma_init=torch.tensor(sigma0, device=device),
-            )
-            se += (best_action - gt_act).pow(2).mean().item()
-            n += 1
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp):
+            t = tactile.encode(batch["tactile"].to(device))   # (B,T,4,196,768)
+            a = batch["action"].to(device)                    # (B,T,chunk,dim)
+            B, T = s.shape[:2]
+            H = min(H_cfg, T - 1)
+            Tc = T - H
+            if Tc < 1:
+                continue
+            for b in range(B):
+                if n >= n_windows:
+                    break
+                gt_act = a[b, Tc - 1 : T - 1]                  # (H,chunk,dim): drives frames Tc-1..T-2
+                best_action, _ = cem_plan(
+                    predictor, s[b : b + 1, :Tc], t[b : b + 1, :Tc], s[b, -1:],
+                    horizon=H, action_chunk=cfg.data.action_chunk, action_dim=cfg.data.action_dim,
+                    particles=int(pcfg.get("particles", 36)), iters=int(pcfg.get("iters", 10)),
+                    elites=int(pcfg.get("elites", 5)), max_context=int(pcfg.get("max_context", 9)),
+                    device=device,
+                    mu_init=a[b, Tc - 1],                      # seed from last context action (abs qpos prior)
+                    sigma_init=torch.tensor(sigma0, device=device),
+                )
+                se += (best_action - gt_act).pow(2).mean().item()
+                n += 1
     core.train()
     return se / max(1, n)
 
@@ -116,6 +118,12 @@ def main():
     else:
         device = cfg.device if torch.cuda.is_available() else "cpu"
     torch.manual_seed(cfg.train.seed + rank)
+    # Mixed precision: bf16 autocast (no GradScaler needed; params stay fp32). Set
+    # train.precision to "fp32"/"none" to disable. Frozen vision encoder runs outside autocast.
+    prec = str(cfg.train.get("precision", "bf16")).lower()
+    amp = prec in ("bf16", "bfloat16") and str(device) != "cpu"
+    if is_main:
+        print(f"[setup] precision={prec} (autocast bf16={amp})")
     if is_main:
         os.makedirs(cfg.paths.out_dir, exist_ok=True)
 
@@ -165,15 +173,19 @@ def main():
     model = DDP(core, device_ids=[local_rank], find_unused_parameters=True) if is_dist else core
 
     # --- data ---
+    # batch_size_per_gpu is PER-GPU; DDP only shards dataset indices, so global = per_gpu * world.
+    bs = int(cfg.train.get("batch_size_per_gpu", cfg.train.get("batch_size", 1)))
+    if is_main:
+        print(f"[data] batch_size_per_gpu={bs} | world={world} | global_batch={bs * world}")
     train_ds = build_dataset(cfg, val=False)
     sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, drop_last=True) if is_dist else None
-    loader = DataLoader(train_ds, batch_size=cfg.train.batch_size, sampler=sampler,
+    loader = DataLoader(train_ds, batch_size=bs, sampler=sampler,
                         shuffle=(sampler is None), drop_last=True,
                         num_workers=cfg.train.get("num_workers", 0), pin_memory=True)
     val_loader = None
     if is_main and cfg.data.get("val_ratio", 0) and cfg.train.get("eval_every", 0):
         val_ds = build_dataset(cfg, val=True)
-        val_loader = DataLoader(val_ds, batch_size=cfg.train.batch_size, shuffle=True, drop_last=True,
+        val_loader = DataLoader(val_ds, batch_size=bs, shuffle=True, drop_last=True,
                                 num_workers=cfg.train.get("num_workers", 0), pin_memory=True)
         print(f"[data] train windows={len(train_ds)}  val windows={len(val_ds)}")
 
@@ -231,7 +243,8 @@ def main():
         for g in opt.param_groups:
             g["lr"] = lr * g["lr_scale"]
 
-        loss, l_teacher, l_sampling = model(s, batch["tactile"].to(device), batch["action"].to(device))
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp):
+            loss, l_teacher, l_sampling = model(s, batch["tactile"].to(device), batch["action"].to(device))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         gnorm = torch.nn.utils.clip_grad_norm_(clip_params, 1.0)
@@ -247,12 +260,12 @@ def main():
 
         if (val_loader is not None and step > 0 and step >= cfg.train.get("eval_start", 0)
                 and step % cfg.train.eval_every == 0):
-            v, vt, vs = evaluate(core, vision, val_loader, device, cfg.train.get("val_batches", 8))
+            v, vt, vs = evaluate(core, vision, val_loader, device, cfg.train.get("val_batches", 8), amp)
             log = {"val/loss": v, "val/teacher": vt, "val/sampling": vs}
             msg = f"  [val] step {step} | L {v:.4f} | teacher {vt:.4f} | sampling {vs:.4f}"
             if cfg.train.get("eval_action_mse", True):
                 amse = action_mse_eval(core, vision, val_loader, device,
-                                       cfg.train.get("val_action_windows", 4), cfg)
+                                       cfg.train.get("val_action_windows", 4), cfg, amp)
                 log["val/action_mse"] = amse
                 msg += f" | action_mse {amse:.4f}"
             print(msg, flush=True)
@@ -264,12 +277,12 @@ def main():
 
     if is_main:
         if val_loader is not None:
-            v, vt, vs = evaluate(core, vision, val_loader, device, cfg.train.get("val_batches", 8))
+            v, vt, vs = evaluate(core, vision, val_loader, device, cfg.train.get("val_batches", 8), amp)
             log = {"val/loss": v, "val/teacher": vt, "val/sampling": vs}
             msg = f"[final-val] L {v:.4f} | teacher {vt:.4f} | sampling {vs:.4f}"
             if cfg.train.get("eval_action_mse", True):
                 amse = action_mse_eval(core, vision, val_loader, device,
-                                       cfg.train.get("val_action_windows", 4), cfg)
+                                       cfg.train.get("val_action_windows", 4), cfg, amp)
                 log["val/action_mse"] = amse
                 msg += f" | action_mse {amse:.4f}"
             print(msg, flush=True)
