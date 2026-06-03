@@ -1,0 +1,48 @@
+# Determined experiment: full 2-GPU UniVTAC insert_HDMI closed-loop VT-WM evaluation on ada-24g.
+name: vtwm_univtac_insert_hdmi_eval_ada24g_2gpu_full
+description: Full VT-WM closed-loop UniVTAC insert_HDMI eval, 2-GPU split with default RTX RaytracedLighting renderer
+workspace: RTX4090
+project: vt-wm
+entrypoint: /home/wangshuxun/VLA/vt-wm/scripts/det_eval_univtac_insert_hdmi_ada.sh
+max_restarts: 0
+
+resources:
+  resource_pool: ada-24g
+  slots_per_trial: 2
+  is_single_node: true
+  shm_size: 34359738368
+
+bind_mounts:
+  - host_path: /mount/HOME/wangshuxun
+    container_path: /home/wangshuxun
+  - host_path: /mount/NAS1/public
+    container_path: /run/determined/NAS1/public
+
+environment:
+  image: 10.130.130.5:8192/wangshuxun:ubuntu22-04-cuda12.8-v5-vulkan
+  environment_variables:
+    - MODEL_GPU=1
+    - RENDER_GPU=0
+    - TASK_CONFIG=demo_eval_video
+    - TOTAL_NUM=100
+    - START_SEED=0
+    - MAX_SEED=-1
+    - TIMEOUT_SEC=14400
+    - NVIDIA_DRIVER_CAPABILITIES=all
+    - USER=wangshuxun
+    - PYTHONUNBUFFERED=1
+
+checkpoint_storage:
+  type: shared_fs
+  host_path: /mount/NAS1/public
+  storage_path: shuxun
+  save_experiment_best: 0
+  save_trial_best: 0
+  save_trial_latest: 0
+
+searcher:
+  name: single
+  metric: success_rate
+  max_length:
+    batches: 1
+  smaller_is_better: false

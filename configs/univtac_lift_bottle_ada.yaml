@@ -1,0 +1,76 @@
+# VT-WM UniVTAC lift_bottle config for ada-24g closed-loop evaluation.
+# Synced from the A100 training config, with paths mapped to the ada Determined mounts.
+
+paths:
+  cosmos_encoder_jit: /run/determined/NAS1/public/wangshuxun/models/cosmos/Cosmos-Tokenize1-CI16x16-360p/encoder.jit
+  sparsh_dino_ckpt: /run/determined/NAS1/public/wangshuxun/models/sparsh/sparsh-dino-base/dino_vitbase.safetensors
+  out_dir: ./runs/univtac
+
+device: cuda
+
+encoder:
+  tactile: sparsh_gelsight
+  freeze_tactile: false
+
+data:
+  source: univtac
+  data_root: /run/determined/NAS1/public/wangshuxun/UniVTAC/lift_bottle/clean
+  camera: head
+  tactile_keys: null
+  tactile_image: rgb_marker
+  T: 9
+  frame_stride: 10
+  num_sensors: 2
+  action_chunk: 10
+  action_dim: 8
+  tactile_num_frames: 2
+  tactile_stride: 10
+  rgb_hw: [192, 320]
+  tactile_hw: [224, 224]
+  val_ratio: 0.05
+  max_episodes: null
+
+model:
+  dim: 512
+  depth: 4
+  num_heads: 8
+  mlp_ratio: 4.0
+  max_temporal: 64
+  tactile_dim: 768
+
+train:
+  batch_size_per_gpu: 8
+  precision: bf16
+  num_workers: 4
+  steps: 40000
+  warmup_steps: 10000
+  peak_lr: 3.0e-4
+  final_lr: 3.0e-7
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  sampling_horizon: 3
+  tactile_lr_scale: 0.1
+  log_every: 20
+  eval_every: 10000
+  eval_start: 0
+  val_batches: 8
+  eval_action_mse: true
+  val_action_windows: 4
+  val_plan_horizon: 3
+  val_plan_sigma: 0.1
+  save_every: 2000
+  seed: 42
+
+wandb:
+  enabled: false
+  project: vt-wm
+  name: univtac_lift_bottle_eval
+  mode: offline
+
+planning:
+  freq: 6
+  horizon_s: 2
+  particles: 36
+  iters: 10
+  elites: 5
+  max_context: 9
