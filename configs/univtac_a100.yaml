@@ -5,7 +5,7 @@
 paths:
   cosmos_encoder_jit: /mount/localcq1/wangshuxun/model_wsx/models/cosmos/Cosmos-Tokenize1-CI16x16-360p/encoder.jit
   sparsh_dino_ckpt: /mount/localcq1/wangshuxun/model_wsx/models/sparsh/sparsh-dino-base/dino_vitbase.safetensors
-  out_dir: /dev/shm/wsx/vt-wm/runs/univtac
+  out_dir: /dev/shm/wsx/vt-wm/runs/univtac_lift_bottle
 
 device: cuda
 
@@ -16,7 +16,7 @@ encoder:
 data:
   source: univtac
   # single episode dir (e.g. grasp_classify/clean) or a parent with several {task}/{config} stores
-  data_root: /mount/localcq1/wangshuxun/dataset/insert_HDMI/clean
+  data_root: /mount/localcq1/wangshuxun/dataset/lift_bottle/clean
   camera: head            # head | wrist
   tactile_keys: null      # null -> auto-detect (left_gsmini/right_gsmini, else left_tactile/...)
   tactile_image: rgb_marker
@@ -45,7 +45,7 @@ train:
   precision: bf16          # bf16 autocast (no GradScaler); set fp32/none to disable
   num_workers: 4
   steps: 40000
-  warmup_steps: 10000
+  warmup_steps: 5000
   peak_lr: 3.0e-4
   final_lr: 3.0e-7
   weight_decay: 0.01
@@ -53,7 +53,7 @@ train:
   sampling_horizon: 3
   tactile_lr_scale: 0.1
   log_every: 20
-  eval_every: 10000
+  eval_every: 5000
   eval_start: 0           # only run validation once step >= eval_start (delay early/noisy evals)
   val_batches: 8          # # batches for the val state-prediction loss
   eval_action_mse: true   # also log CEM-planned-vs-GT action MSE on val (val/action_mse)
@@ -66,7 +66,7 @@ train:
 wandb:
   enabled: true
   project: vt-wm
-  name: univtac
+  name: univtac_lift_bottle
   mode: online
 
 planning:
