@@ -16,7 +16,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/univtac_lift_bottle_ada.yaml")
     ap.add_argument("--ckpt", default="runs/univtac_lift_bottle/predictor.pt")
-    ap.add_argument("--ctx", type=int, default=2)
+    ap.add_argument("--ctx", type=int, default=1)
     ap.add_argument("--windows", type=int, default=8)
     args = ap.parse_args()
 

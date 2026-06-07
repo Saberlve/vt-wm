@@ -187,7 +187,7 @@ def main():
     ap.add_argument("--config", default="configs/manifeel.yaml")
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--num_episodes", type=int, default=6)
-    ap.add_argument("--ctx", type=int, default=2, help="context frames before rollout")
+    ap.add_argument("--ctx", type=int, default=1, help="context frames before rollout (1 = single-frame cold start, matches training/deploy)")
     ap.add_argument("--eval_T", type=int, default=16, help="window length for eval videos (>= cfg.data.T)")
     ap.add_argument("--out_dir", default="./eval_out")
     ap.add_argument("--fps", type=int, default=3)

@@ -37,7 +37,7 @@ train:
   final_lr: 3.0e-7
   weight_decay: 0.01
   betas: [0.9, 0.95]
-  sampling_horizon: 3   # H for autoregressive sampling loss (paper H=3-5)
+  sampling_horizon: 3   # H = # autoregressive steps imagined from a SINGLE start frame (paper H=3-5)
   log_every: 1
   seed: 0
 
