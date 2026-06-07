@@ -82,20 +82,21 @@ def action_mse_eval(core, vision, val_loader, device, n_windows, cfg, amp=False)
             a = batch["action"].to(device)                    # (B,T,chunk,dim)
             B, T = s.shape[:2]
             H = min(H_cfg, T - 1)
-            Tc = T - H
-            if Tc < 1:
+            if H < 1:
                 continue
+            # Single-frame cold start (matches sampling_loss / deploy): imagine H steps from frame 0,
+            # so the goal is the GT visual latent H steps ahead and the GT actions drive frames 0..H-1.
             for b in range(B):
                 if n >= n_windows:
                     break
-                gt_act = a[b, Tc - 1 : T - 1]                  # (H,chunk,dim): drives frames Tc-1..T-2
+                gt_act = a[b, 0:H]                             # (H,chunk,dim): drives frames 0..H-1
                 best_action, _ = cem_plan(
-                    predictor, s[b : b + 1, :Tc], t[b : b + 1, :Tc], s[b, -1:],
+                    predictor, s[b : b + 1, :1], t[b : b + 1, :1], s[b, H : H + 1],
                     horizon=H, action_chunk=cfg.data.action_chunk, action_dim=cfg.data.action_dim,
                     particles=int(pcfg.get("particles", 36)), iters=int(pcfg.get("iters", 10)),
                     elites=int(pcfg.get("elites", 5)), max_context=int(pcfg.get("max_context", 9)),
                     device=device,
-                    mu_init=a[b, Tc - 1],                      # seed from last context action (abs qpos prior)
+                    mu_init=a[b, 0],                           # seed from the first action (abs qpos prior)
                     sigma_init=torch.tensor(sigma0, device=device),
                 )
                 se += (best_action - gt_act).pow(2).mean().item()
@@ -140,7 +141,9 @@ def main():
         max_temporal=cfg.model.max_temporal, tactile_dim=cfg.model.get("tactile_dim", 768),
     ).to(device)
     tactile_trainable = getattr(tactile, "trainable", False)
-    core = VTWMTrainModule(tactile, predictor, cfg.train.sampling_horizon, cfg.data.T).to(device)
+    # max_context caps the autoregressive rollout window (paper = 9); take it from planning, not T.
+    sampling_max_ctx = int(cfg.get("planning", {}).get("max_context", 9))
+    core = VTWMTrainModule(tactile, predictor, cfg.train.sampling_horizon, sampling_max_ctx).to(device)
 
     if is_main:
         n_pred = sum(p.numel() for p in predictor.parameters() if p.requires_grad)
