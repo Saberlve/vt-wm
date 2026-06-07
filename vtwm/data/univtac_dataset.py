@@ -1,22 +1,23 @@
 """UniVTAC visuo-tactile dataset for VT-WM.
 
 Reads UniVTAC episode HDF5 files (the `byml/UniVTAC` benchmark, GelSight Mini sensors)
-and yields trajectory windows shaped exactly like the rest of the VT-WM pipeline expects
-(same contract as `manifeel_dataset.ManiFeelDataset`):
+and yields trajectory windows shaped exactly like the rest of the VT-WM pipeline expects:
 
   rgb     : (T, 3, *rgb_hw)            head camera RGB, [0,1]; the T frames are sampled
                                        every `frame_stride` steps so a 60Hz source becomes
                                        ~6Hz (paper vision rate; T=9 -> ~1.5s window)
   tactile : (T, 2, 6, *tactile_hw)     left+right GelSight `rgb_marker`, Sparsh-style
-                                       6-channel = two stride-`tactile_stride` frames,
-                                       background-subtracted (frame - bg + 0.5). Built ONCE at
-                                       the window's CURRENT (last) step and repeated over all T
-                                       timesteps: tactile stays a short high-frequency contact
-                                       window while vision is downsampled, so the single
-                                       current-step tactile is broadcast across the vision
-                                       horizon before spatial concat (paper sec 2.3).
-  action  : (T, 1, action_dim)         next-step joint qpos command (chunk size 1); "next"
-                                       means the next *downsampled* frame (k + frame_stride)
+                                       6-channel = the two most recent stride-`tactile_stride`
+                                       frames, background-subtracted (frame - bg + 0.5). Built
+                                       PER timestep: for each (downsampled) window step k the
+                                       6-channel pair is the frames at (k, k-tactile_stride),
+                                       so every vision frame carries its own local tactile
+                                       contact window rather than sharing the current step's.
+  action  : (T, action_chunk, action_dim)   ACT-style high-frequency action chunk: for each
+                                       (downsampled) window step k, the next `action_chunk`
+                                       *consecutive raw* joint qpos commands (k+1, k+2, ...,
+                                       k+action_chunk), clamp-padded at the episode end. Vision
+                                       is downsampled but actions stay at the source rate.
 
 On-disk layout (one file == one episode, FLAT not nested), each field a length-T array:
 
@@ -32,8 +33,9 @@ On-disk layout (one file == one episode, FLAT not nested), each field a length-T
 (Older/contact-collection files may use `left_tactile`/`right_tactile` instead of
 `*_gsmini`; both are probed.)
 
-Action follows UniVTAC's own convention (policy/ACT/process_data.py): the commanded
-joint qpos for the *next* step, padded/truncated to `action_dim` (default 8 = 7 arm + 1 gripper).
+Action follows UniVTAC's own convention (policy/ACT/process_data.py): commanded joint
+qpos, padded/truncated to `action_dim` (default 8 = 7 arm + 1 gripper), gathered into an
+ACT-style chunk of `action_chunk` consecutive raw steps per window timestep.
 """
 from __future__ import annotations
 
@@ -151,6 +153,7 @@ class UniVTACDataset(Dataset):
         tactile_keys: Optional[Tuple[str, ...]] = None,
         tactile_image: str = "rgb_marker",
         action_dim: int = 8,
+        action_chunk: int = 1,
         rgb_hw=(192, 320),
         rgb_resize: str = "crop",
         tactile_hw=(224, 224),
@@ -178,6 +181,7 @@ class UniVTACDataset(Dataset):
         self.camera = camera
         self.tactile_image = tactile_image
         self.action_dim = action_dim
+        self.action_chunk = max(1, int(action_chunk))
         self.rgb_hw = tuple(rgb_hw)
         assert rgb_resize in _RGB_RESIZERS, f"rgb_resize must be one of {list(_RGB_RESIZERS)}"
         self._rgb_resize = _RGB_RESIZERS[rgb_resize]
@@ -224,13 +228,15 @@ class UniVTACDataset(Dataset):
         val_idx = set(perm[:n_val].tolist())
         keep = [i for i in range(n_ep) if (i in val_idx) == val]
 
-        # window index: (episode_idx, start_frame). A window spans (T-1)*frame_stride source
-        # steps (downsampled), so a full window must fit inside the episode.
+        # window index: (episode_idx, start_frame). A window nominally spans (T-1)*frame_stride
+        # source steps (downsampled). We DO emit windows that run past the episode end instead of
+        # dropping them: such windows are clamp-padded in __getitem__ (vision repeats the last
+        # frame, the action chunk repeats the last commanded qpos), so episode-tail starts still
+        # contribute training samples rather than being thrown away.
         self.index: List[Tuple[int, int]] = []
-        span = (T - 1) * self.frame_stride
         for ei in keep:
             _, length = self.episodes[ei]
-            for st in range(0, max(1, length - span)):
+            for st in range(0, max(1, length)):
                 self.index.append((ei, st))
 
     def __len__(self) -> int:
@@ -261,6 +267,39 @@ class UniVTACDataset(Dataset):
             frames.append(np.moveaxis(img, -1, 0))  # CHW
         return np.concatenate(frames, axis=0).astype(np.float32)  # (3*num_frames,H,W)
 
+    def get_tactile_sequence(self, i: int) -> torch.Tensor:
+        """Return the per-timestep tactile tensor (T, S, 6, H, W) for window `i`.
+
+        For each (downsampled) window step k the 6-channel sensor image is the two most
+        recent frames at (k, k-tactile_stride), background-subtracted. This is the tactile
+        used both for training (`__getitem__`) and for eval visualization, so every vision
+        frame carries its own local high-frequency contact window.
+        """
+        ei, start = self.index[i]
+        path, length = self.episodes[ei]
+        h = self._file(path)
+        T = self.T
+        idxs = [min(length - 1, start + t * self.frame_stride) for t in range(T)]
+        ep_start = 0
+        ch = 3 * self.tactile_num_frames
+        if not self.has_tactile:
+            tac = np.zeros((T, len(self.tactile_keys), ch, *self.tactile_hw), dtype=np.float32)
+            return torch.from_numpy(tac)
+
+        bg_by_key = {
+            key: (_decode_image(h[f"tactile/{key}/{self.tactile_image}"][ep_start])
+                  if self.remove_bg else None)
+            for key in self.tactile_keys
+        }
+        tac_steps = []
+        for k in idxs:
+            sensors = [
+                self._tac_frame_6ch(h, key, ep_start, k, bg_by_key[key])
+                for key in self.tactile_keys
+            ]
+            tac_steps.append(np.stack(sensors, axis=0))
+        return torch.from_numpy(np.stack(tac_steps, axis=0).astype(np.float32))
+
     def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
         ei, start = self.index[i]
         path, length = self.episodes[ei]
@@ -268,44 +307,36 @@ class UniVTACDataset(Dataset):
         T = self.T
         # downsample vision to ~6Hz by striding the source steps; clamp-pad short episodes
         idxs = [min(length - 1, start + t * self.frame_stride) for t in range(T)]
-        ep_start = 0
 
         # vision (head camera) -> (T,3,H,W)
         rgb = np.stack([self._rgb_at(h, k) for k in idxs], 0).astype(np.float32)
 
-        # tactile: built ONCE at the current (last) step and repeated over all T timesteps.
-        # Vision is downsampled while tactile stays a short high-frequency contact window, so a
-        # single current-step tactile is broadcast across the vision horizon. -> (T, S, 6, H, W);
-        # zero-filled when the task has no tactile.
-        ch = 3 * self.tactile_num_frames
-        if self.has_tactile:
-            cur = idxs[-1]  # latest in-window frame == the "current step"
-            sensors = []
-            for key in self.tactile_keys:
-                bg = _decode_image(h[f"tactile/{key}/{self.tactile_image}"][ep_start]) \
-                    if self.remove_bg else None
-                sensors.append(self._tac_frame_6ch(h, key, ep_start, cur, bg))  # (6,H,W)
-            tac_cur = np.stack(sensors, axis=0)            # (S,6,H,W)
-            tac = np.repeat(tac_cur[None], T, axis=0)       # (T,S,6,H,W) — identical each step
-        else:
-            tac = np.zeros((T, len(self.tactile_keys), ch, *self.tactile_hw), dtype=np.float32)
+        # tactile: built PER timestep. For each window step k the 6-channel sensor image is the
+        # two most recent frames at (k, k-tactile_stride), so every vision frame carries its own
+        # local high-frequency contact window. -> (T, S, 6, H, W); zero-filled when no tactile.
+        tac = self.get_tactile_sequence(i)
 
-        # action: commanded next-step joint qpos, padded/truncated to action_dim (chunk size 1)
+        # action: ACT-style high-frequency chunk. For each window step k, take the next
+        # `action_chunk` *consecutive raw* commanded qpos (k+1..k+action_chunk) at the source
+        # rate (not frame_stride-downsampled), clamp-padded at the episode end; each padded/
+        # truncated to action_dim. -> (T, action_chunk, A).
         joint = np.asarray(h["embodiment/joint"], dtype=np.float32)  # (length, J)
         act = []
         for k in idxs:
-            nxt = min(length - 1, k + self.frame_stride)  # next *downsampled* frame
-            j = joint[nxt]
-            if j.shape[0] < self.action_dim:
-                j = np.pad(j, (0, self.action_dim - j.shape[0]))
-            else:
-                j = j[: self.action_dim]
-            act.append(j)
-        act = np.stack(act, 0)[:, None].astype(np.float32)  # (T,1,A)
+            chunk = []
+            for c in range(1, self.action_chunk + 1):
+                j = joint[min(length - 1, k + c)]  # next consecutive raw step
+                if j.shape[0] < self.action_dim:
+                    j = np.pad(j, (0, self.action_dim - j.shape[0]))
+                else:
+                    j = j[: self.action_dim]
+                chunk.append(j)
+            act.append(np.stack(chunk, 0))           # (action_chunk, A)
+        act = np.stack(act, 0).astype(np.float32)    # (T, action_chunk, A)
 
         return {
             "rgb": torch.from_numpy(rgb),
-            "tactile": torch.from_numpy(tac),
+            "tactile": tac,
             "action": torch.from_numpy(act),
             "task": self.task_name,
             "episode": int(ei),

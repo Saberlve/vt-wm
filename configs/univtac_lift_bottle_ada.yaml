@@ -4,6 +4,8 @@
 paths:
   cosmos_encoder_jit: /run/determined/NAS1/public/wangshuxun/models/cosmos/Cosmos-Tokenize1-CI16x16-360p/encoder.jit
   sparsh_dino_ckpt: /run/determined/NAS1/public/wangshuxun/models/sparsh/sparsh-dino-base/dino_vitbase.safetensors
+  # Optional: Sparsh GelSight force-field decoder for interpretable tactile eval videos.
+  sparsh_forcefield_ckpt: /run/determined/NAS1/public/wangshuxun/models/sparsh/sparsh-gelsight-forcefield-decoder/gelsight_t1_forcefield_dino_vitbase_bg/checkpoints/epoch-0021.pth
   out_dir: ./runs/univtac
 
 device: cuda
