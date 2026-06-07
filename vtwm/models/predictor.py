@@ -128,13 +128,12 @@ class VTWMPredictor(nn.Module):
         self.blocks = nn.ModuleList([PredictorBlock(dim, num_heads, mlp_ratio) for _ in range(depth)])
 
     def forward(self, s: torch.Tensor, t: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """s:(B,T,16,12,20)  t:(B,T,4,196,768)  a:(B,T,5,7) ->
-        predicted next-step (s_hat, t_hat) of the same shapes (position k predicts k+1)."""
+        """predicted next-step (s_hat, t_hat) of the same shapes (position k predicts k+1)."""
         b, T = s.shape[:2]
-        vis = self.vis_proj(_vision_to_tokens(s))  # (B,T,240,d)
+        vis = self.vis_proj(_vision_to_tokens(s)) 
         tac = self.tac_proj(t.reshape(b, T, self.tactile_tokens, self.tactile_dim))  # (B,T,784,d)
         sensory = torch.cat([vis, tac], dim=2)  # (B,T,Ls,d)
-        act = self.act_proj(a)  # (B,T,5,d)
+        act = self.act_proj(a) 
 
         for blk in self.blocks:
             sensory, _ = blk(sensory, act, self.rope_spatial, self.rope_temporal)

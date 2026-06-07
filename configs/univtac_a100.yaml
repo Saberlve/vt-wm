@@ -26,7 +26,7 @@ data:
   action_chunk: 10
   action_dim: 8           # 7 arm + 1 gripper (joint qpos)
   tactile_num_frames: 2
-  tactile_stride: 10      # 2-frame current-step stack spans ~0.16s @60Hz (paper tactile window)
+  tactile_stride: 5      # 2-frame current-step stack spans ~0.16s @60Hz (paper tactile window)
   rgb_hw: [192, 320]
   tactile_hw: [224, 224]
   val_ratio: 0.05

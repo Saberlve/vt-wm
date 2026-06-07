@@ -230,8 +230,7 @@ class UniVTACDataset(Dataset):
 
         # window index: (episode_idx, start_frame). A window nominally spans (T-1)*frame_stride
         # source steps (downsampled). We DO emit windows that run past the episode end instead of
-        # dropping them: such windows are clamp-padded in __getitem__ (vision repeats the last
-        # frame, the action chunk repeats the last commanded qpos), so episode-tail starts still
+        # dropping them: such windows are clamp-padded in __getitem__, so episode-tail starts still
         # contribute training samples rather than being thrown away.
         self.index: List[Tuple[int, int]] = []
         for ei in keep:
@@ -316,9 +315,9 @@ class UniVTACDataset(Dataset):
         # local high-frequency contact window. -> (T, S, 6, H, W); zero-filled when no tactile.
         tac = self.get_tactile_sequence(i)
 
-        # action: ACT-style high-frequency chunk. For each window step k, take the next
-        # `action_chunk` *consecutive raw* commanded qpos (k+1..k+action_chunk) at the source
-        # rate (not frame_stride-downsampled), clamp-padded at the episode end; each padded/
+        # action: For each window step k, take the next `action_chunk` *consecutive raw* commanded qpos 
+        # (k+1..k+action_chunk) at the source rate (not frame_stride-downsampled),
+        # clamp-padded at the episode end; each padded/
         # truncated to action_dim. -> (T, action_chunk, A).
         joint = np.asarray(h["embodiment/joint"], dtype=np.float32)  # (length, J)
         act = []

@@ -8,8 +8,10 @@ Only rank 0 logs / evaluates / checkpoints / writes wandb.
 from __future__ import annotations
 
 import argparse
+import glob
 import math
 import os
+import shutil
 
 import torch
 import torch.distributed as dist
@@ -158,8 +160,16 @@ def main():
     step = 0
     resume_path = args.resume
     if resume_path == "auto":
-        cand = os.path.join(cfg.paths.out_dir, "last.pt")
-        resume_path = cand if os.path.exists(cand) else None
+        # pick the highest-step checkpoint subfolder, falling back to a legacy last.pt
+        step_ckpts = sorted(
+            (p for p in glob.glob(os.path.join(cfg.paths.out_dir, "step_*", "checkpoint.pt"))),
+            key=lambda p: int(os.path.basename(os.path.dirname(p)).split("_")[1]),
+        )
+        if step_ckpts:
+            resume_path = step_ckpts[-1]
+        else:
+            legacy = os.path.join(cfg.paths.out_dir, "last.pt")
+            resume_path = legacy if os.path.exists(legacy) else None
     if resume_path and os.path.exists(resume_path):
         ck = torch.load(resume_path, map_location=device)
         predictor.load_state_dict(ck["model"])
@@ -200,12 +210,19 @@ def main():
             run = wandb.init(project=wcfg.get("project", "vt-wm"), name=wcfg.get("name", None),
                              mode=wcfg.get("mode", "online"), config=OmegaConf.to_container(cfg, resolve=True),
                              resume="allow")
+            # one-time RGB sanity check: upload 4 frames before training
+            dbg = next(iter(loader))["rgb"]             # (B,T,3,H,W) in [0,1]
+            imgs = dbg.reshape(-1, *dbg.shape[2:])[:4].clamp(0, 1).cpu()
+            run.log({"debug/rgb_batch": [wandb.Image(img) for img in imgs]}, step=step)
+            print(f"[wandb] logged {len(imgs)} debug RGB images (shape {tuple(imgs.shape[1:])})", flush=True)
         except Exception as e:  # noqa: BLE001
             print(f"[wandb] disabled ({type(e).__name__}: {str(e)[:80]})")
             use_wandb = False
 
-    def save(tag):
-        path = os.path.join(cfg.paths.out_dir, tag)
+    def save(tag, subdir=None):
+        out = os.path.join(cfg.paths.out_dir, subdir) if subdir else cfg.paths.out_dir
+        os.makedirs(out, exist_ok=True)
+        path = os.path.join(out, tag)
         torch.save({
             "model": predictor.state_dict(),
             "tactile": tactile.model.state_dict() if tactile_trainable else None,
@@ -215,54 +232,67 @@ def main():
         }, path)
         return path
 
-    # --- one-time wandb image sanity check (debug): upload 4 RGB frames before training ---
-    if use_wandb:
-        dbg = next(iter(loader))["rgb"]                 # (B,T,3,H,W) in [0,1]
-        flat = dbg.reshape(-1, *dbg.shape[2:])          # (B*T,3,H,W)
-        imgs = flat[:4].clamp(0, 1).cpu()               # first 4 frames
-        run.log({"debug/rgb_batch": [wandb.Image(img) for img in imgs]}, step=step)
-        print(f"[wandb] logged {len(imgs)} debug RGB images (shape {tuple(imgs.shape[1:])})", flush=True)
+    def save_step_ckpt(keep=2):
+        """Save into a step-named subfolder (out_dir/step_<n>/checkpoint.pt) and
+        keep only the most recent `keep` such folders."""
+        path = save("checkpoint.pt", subdir=f"step_{step}")
+        step_dirs = sorted(
+            (d for d in glob.glob(os.path.join(cfg.paths.out_dir, "step_*")) if os.path.isdir(d)),
+            key=lambda d: int(os.path.basename(d).split("_")[1]),
+        )
+        for d in step_dirs[:-keep]:  # drop everything but the newest `keep`
+            shutil.rmtree(d, ignore_errors=True)
+        return path
 
     model.train()
+    # flat list of all trainable params, used for global grad-norm clipping below
     clip_params = [p for g in groups for p in g["params"]]
     epoch = 0
     if sampler is not None:
-        sampler.set_epoch(epoch)
+        sampler.set_epoch(epoch)  # DistributedSampler needs the epoch for deterministic shuffling
     data_iter = iter(loader)
     pbar = tqdm(total=cfg.train.steps, initial=step, desc="train",
                 dynamic_ncols=True, disable=not is_main)
+    # step-based loop: one optimizer update per iteration, runs until cfg.train.steps
     while step < cfg.train.steps:
+        # pull the next batch; when the loader is exhausted, bump the epoch and restart it
         try:
             batch = next(data_iter)
         except StopIteration:
             epoch += 1
             if sampler is not None:
-                sampler.set_epoch(epoch)
+                sampler.set_epoch(epoch)  # reshuffle for the new epoch across ranks
             data_iter = iter(loader)
             batch = next(data_iter)
 
-        s = vision.encode(batch["rgb"].to(device))  # frozen, no_grad inside wrapper
+        # frozen vision backbone -> latent states s; encoder runs under no_grad internally
+        s = vision.encode(batch["rgb"].to(device))
+        # cosine/warmup LR schedule; apply per-group scale (different LR for different param groups)
         lr = lr_at(step, cfg.train.warmup_steps, cfg.train.steps, cfg.train.peak_lr, cfg.train.final_lr)
         for g in opt.param_groups:
             g["lr"] = lr * g["lr_scale"]
 
+        # forward under bf16 autocast; predictor returns total loss + teacher/sampling components
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp):
             loss, l_teacher, l_sampling = model(s, batch["tactile"].to(device), batch["action"].to(device))
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        gnorm = torch.nn.utils.clip_grad_norm_(clip_params, 1.0)
+        gnorm = torch.nn.utils.clip_grad_norm_(clip_params, 1.0)  # clip to unit norm before stepping
         opt.step()
 
+        # --- console logging (rank 0 only): live postfix + periodic detailed line ---
         if is_main:
-            pbar.set_postfix(L=f"{loss.item():.4f}", lr=f"{lr:.2e}", refresh=False)
+            pbar.set_postfix(ep=epoch, L=f"{loss.item():.4f}", lr=f"{lr:.2e}", refresh=False)
             if step % cfg.train.log_every == 0:
-                tqdm.write(f"step {step:6d} | lr {lr:.2e} | L {loss.item():.4f} "
+                tqdm.write(f"step {step:6d} | epoch {epoch:3d} | lr {lr:.2e} | L {loss.item():.4f} "
                            f"| teacher {l_teacher.item():.4f} | sampling {l_sampling.item():.4f}")
+        # per-step metrics to wandb
         if use_wandb:
             run.log({"train/loss": loss.item(), "train/teacher": l_teacher.item(),
                      "train/sampling": l_sampling.item(), "train/lr": lr,
-                     "train/grad_norm": float(gnorm)}, step=step)
+                     "train/grad_norm": float(gnorm), "train/epoch": epoch}, step=step)
 
+        # --- periodic validation (after eval_start, every eval_every steps) ---
         if (val_loader is not None and step > 0 and step >= cfg.train.get("eval_start", 0)
                 and step % cfg.train.eval_every == 0):
             v, vt, vs = evaluate(core, vision, val_loader, device, cfg.train.get("val_batches", 8), amp)
@@ -276,8 +306,9 @@ def main():
             tqdm.write(msg)
             if use_wandb:
                 run.log(log, step=step)
+        # --- periodic checkpoint (rank 0): step-named subfolder, keep newest few ---
         if is_main and cfg.train.get("save_every", 0) and step > 0 and step % cfg.train.save_every == 0:
-            save("last.pt")
+            save_step_ckpt(cfg.train.get("keep_last", 2))
         step += 1
         pbar.update(1)
     pbar.close()
@@ -295,7 +326,7 @@ def main():
             print(msg, flush=True)
             if use_wandb:
                 run.log(log, step=step)
-        save("last.pt")
+        save_step_ckpt(cfg.train.get("keep_last", 2))
         print(f"[saved] {save('predictor.pt')}", flush=True)
         if use_wandb:
             run.finish()

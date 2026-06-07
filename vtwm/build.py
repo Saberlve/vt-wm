@@ -38,16 +38,6 @@ def build_dataset(cfg, val: bool = False) -> Dataset:
             action_chunk=cfg.data.action_chunk, action_dim=cfg.data.action_dim,
             rgb_hw=cfg.data.rgb_hw, tactile_hw=cfg.data.tactile_hw, seed=cfg.train.seed,
         )
-    if src == "manifeel":
-        from vtwm.data.manifeel_dataset import make_manifeel_dataset
-
-        return make_manifeel_dataset(
-            zarr_path=cfg.data.zarr_path, val=val, T=cfg.data.T,
-            rgb_key=cfg.data.rgb_key, tactile_keys=list(cfg.data.tactile_keys),
-            action_key=cfg.data.action_key, rgb_hw=cfg.data.rgb_hw, tactile_hw=cfg.data.tactile_hw,
-            tactile_num_frames=cfg.data.tactile_num_frames, tactile_stride=cfg.data.tactile_stride,
-            action_dim=cfg.data.action_dim, val_ratio=cfg.data.get("val_ratio", 0.02), seed=cfg.train.seed,
-        )
     if src == "univtac":
         from vtwm.data.univtac_dataset import make_univtac_dataset
 

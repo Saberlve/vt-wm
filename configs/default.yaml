@@ -43,7 +43,7 @@ train:
 
 planning:           # CEM (Algorithm 1); reduced for the smoke test
   freq: 6
-  horizon_s: 2
+  horizon_s: 4
   particles: 36
   iters: 10
   elites: 5
