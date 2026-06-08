@@ -39,7 +39,7 @@ from omegaconf import OmegaConf
 
 from vtwm.build import build_dataset, build_tactile_encoder, build_vision_encoder
 from vtwm.models.predictor import VTWMPredictor
-from vtwm.planning.cem import cem_plan
+from vtwm.planning.cem import cem_plan, qpos_sigma_ramp
 
 
 def psnr(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -146,7 +146,7 @@ def main():
     ap.add_argument("--num_windows", type=int, default=6, help="windows to evaluate")
     ap.add_argument("--ctx", type=int, default=1,
                     help="context frames before planning (1 = single-frame cold start, matches train/deploy)")
-    ap.add_argument("--horizon", type=int, default=0,
+    ap.add_argument("--horizon", type=int, default=4,
                     help="planned horizon in ~6Hz steps; 0 = use (window_T - ctx)")
     ap.add_argument("--eval_T", type=int, default=0,
                     help="window length; 0 = cfg.data.T. Larger gives a longer plan horizon / GT-action span (goal is always the episode final frame).")
@@ -161,7 +161,7 @@ def main():
     ap.add_argument("--iters", type=int, default=0)
     ap.add_argument("--elites", type=int, default=0)
     ap.add_argument("--qpos_sigma", type=float, default=0.0,
-                    help="0 = use cfg.train.val_plan_sigma")
+                    help="per-step |Δqpos| ramped over the horizon; 0 = use cfg.train.val_plan_sigma_step")
     args = ap.parse_args()
 
     cfg = OmegaConf.load(args.config)
@@ -204,7 +204,8 @@ def main():
     particles = args.particles or int(pcfg.get("particles", 36))
     iters = args.iters or int(pcfg.get("iters", 10))
     elites = args.elites or int(pcfg.get("elites", 5))
-    qpos_sigma = args.qpos_sigma or float(cfg.train.get("val_plan_sigma", 0.1))
+    qpos_sigma = args.qpos_sigma or float(cfg.train.get("val_plan_sigma_step", 0.002))
+    frame_stride = int(cfg.data.frame_stride)
     action_chunk = int(cfg.data.action_chunk)
     action_dim = int(cfg.data.action_dim)
 
@@ -251,14 +252,19 @@ def main():
             # CEM plan from the single context frame toward the goal latent (train/deploy regime).
             if args.mu_init == "first_action":
                 mu_init = gt_act[0]                        # (chunk,dim) abs qpos prior
+                # chunk seed -> the c offset cancels, so the std ramps along horizon only.
+                sigma_init = qpos_sigma_ramp(
+                    H, action_chunk, action_dim, qpos_sigma, frame_stride,
+                    device=device, chunk_accumulate=False)
             else:
-                mu_init = None
+                mu_init = None                            # zero seed -> unit-std prior (cem default)
+                sigma_init = None
             cem_act, _ = cem_plan(
                 predictor, s[:, ctx - 1:ctx], t[:, ctx - 1:ctx], s_goal,
                 horizon=H, action_chunk=action_chunk, action_dim=action_dim,
                 particles=particles, iters=iters, elites=elites, max_context=max_ctx,
                 device=device, mu_init=mu_init,
-                sigma_init=torch.tensor(qpos_sigma, device=device),
+                sigma_init=sigma_init,
             )                                             # (H,chunk,dim)
 
             # Imagine forward under the CEM-sampled actions AND under the GT actions.

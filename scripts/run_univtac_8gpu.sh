@@ -16,5 +16,5 @@ exec .venv/bin/torchrun \
   --nnodes=1 \
   --nproc_per_node=8 \
   -m vtwm.train \
-  --config configs/univtac_a100.yaml \
-  --resume auto
+  --config configs/univtac_a100.yaml 
+  # --resume auto 

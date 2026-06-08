@@ -10,6 +10,7 @@ class InputProjector(nn.Module):
 
     def __init__(self, in_dim: int, dim: int):
         super().__init__()
+        # self.norm = nn.LayerNorm(in_dim)
         self.proj = nn.Linear(in_dim, dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

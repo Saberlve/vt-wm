@@ -25,7 +25,7 @@ from vtwm.build import build_dataset, build_tactile_encoder, build_vision_encode
 from vtwm.losses import vtwm_loss
 from vtwm.models.predictor import VTWMPredictor
 from vtwm.models.train_module import VTWMTrainModule
-from vtwm.planning.cem import cem_plan
+from vtwm.planning.cem import cem_plan, qpos_sigma_ramp
 
 
 def lr_at(step, warmup, total, peak, final):
@@ -70,7 +70,8 @@ def action_mse_eval(core, vision, val_loader, device, n_windows, cfg, amp=False)
     core.eval()
     predictor, tactile = core.predictor, core.tactile
     H_cfg = int(cfg.train.get("val_plan_horizon", cfg.train.sampling_horizon))
-    sigma0 = float(cfg.train.get("val_plan_sigma", 0.1))
+    sigma_step = float(cfg.train.get("val_plan_sigma_step", 0.002))  # per-step |Δqpos|, ramped in CEM
+    frame_stride = int(cfg.data.frame_stride)
     pcfg = cfg.get("planning", {})
     se = 0.0
     n = 0
@@ -99,8 +100,15 @@ def action_mse_eval(core, vision, val_loader, device, n_windows, cfg, amp=False)
                     particles=int(pcfg.get("particles", 36)), iters=int(pcfg.get("iters", 10)),
                     elites=int(pcfg.get("elites", 5)), max_context=int(pcfg.get("max_context", 9)),
                     device=device,
-                    mu_init=a[b, 0],                           # seed from the first action (abs qpos prior)
-                    sigma_init=torch.tensor(sigma0, device=device),
+                    # Deploy-faithful seed: a SINGLE current pose (~a[b,0,0]) broadcast over all
+                    # keyframes, NOT the GT keyframe-0 action a[b,0] (that leaks the answer and, with
+                    # a near-zero h=0 std, pins keyframe 0 to GT -> action_mse trivially 0 there).
+                    # Every (keyframe, chunk) position then drifts from the seed, so the std ramps
+                    # along both axes (chunk_accumulate=True), mirroring the deploy first plan.
+                    mu_init=a[b, 0, 0],                        # (dim,) current pose, broadcast in cem
+                    sigma_init=qpos_sigma_ramp(
+                        H, cfg.data.action_chunk, cfg.data.action_dim, sigma_step,
+                        frame_stride, device=device, chunk_accumulate=True),
                 )
                 se += (best_action - gt_act).pow(2).mean().item()
                 n += 1

@@ -16,7 +16,7 @@ def build_vision_encoder(cfg, device):
 
 def build_tactile_encoder(cfg, device):
     kind = cfg.encoder.tactile
-    freeze = cfg.encoder.get("freeze_tactile", True)
+    freeze = cfg.encoder.get("freeze_tactile", False)
     if kind == "sparshx":
         from vtwm.encoders.tactile_sparshx import SparshXTactileEncoder
 

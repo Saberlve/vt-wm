@@ -59,7 +59,7 @@ train:
   eval_action_mse: true   # also log CEM-planned-vs-GT action MSE on val (val/action_mse)
   val_action_windows: 4   # # val windows to plan per eval (CEM is heavy: particles*iters rollouts each)
   val_plan_horizon: 4     # action steps to plan toward the window's final visual latent (<= T-1)
-  val_plan_sigma: 0.1     # CEM init std around the last context action (abs joint-qpos prior)
+  val_plan_sigma_step: 0.002  # per-step |Δqpos| (measured lift_bottle arm-mean ~0.0015); CEM ramps it by cumulative steps
   save_every: 2000
   seed: 42
 
