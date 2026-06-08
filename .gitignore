@@ -13,8 +13,7 @@ third_party/
 *.pth
 
 # Evaluation outputs
-eval_out/
-eval_out_univtac/
+eval_out*/
 
 # Training logs & runs
 logs/

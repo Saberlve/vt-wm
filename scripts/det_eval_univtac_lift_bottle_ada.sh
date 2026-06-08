@@ -26,7 +26,7 @@ LOG_FILE="${LOG_DIR}/ada24g_univtac_lift_bottle_eval_$(date +%Y%m%d_%H%M%S).log"
   echo "[entrypoint] host=$(hostname) CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
   echo "[entrypoint] render_gpu=${RENDER_GPU} model_gpu=${MODEL_GPU} task_config=${TASK_CONFIG} timeout=${TIMEOUT_SEC}s"
   nvidia-smi --query-gpu=index,name,memory.total,memory.used --format=csv || true
-  ls -lh runs/univtac/predictor.pt
+  ls -lh runs/univtac_lift_bottle/predictor.pt
 
   echo "[entrypoint] --- NVIDIA graphics/RTX lib presence ---"
   for n in libGLX_nvidia.so.0 libnvidia-glcore.so libnvidia-rtcore.so libnvoptix.so.1 libnvidia-gpucomp.so; do

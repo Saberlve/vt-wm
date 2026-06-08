@@ -6,7 +6,7 @@ paths:
   sparsh_dino_ckpt: /run/determined/NAS1/public/wangshuxun/models/sparsh/sparsh-dino-base/dino_vitbase.safetensors
   # Optional: Sparsh GelSight force-field decoder for interpretable tactile eval videos.
   sparsh_forcefield_ckpt: /run/determined/NAS1/public/wangshuxun/models/sparsh/sparsh-gelsight-forcefield-decoder/gelsight_t1_forcefield_dino_vitbase_bg/checkpoints/epoch-0021.pth
-  out_dir: ./runs/univtac
+  out_dir: ./runs/univtac_lift_bottle
 
 device: cuda
 
@@ -26,7 +26,7 @@ data:
   action_chunk: 10
   action_dim: 8
   tactile_num_frames: 2
-  tactile_stride: 10
+  tactile_stride: 5
   rgb_hw: [192, 320]
   tactile_hw: [224, 224]
   val_ratio: 0.05
@@ -45,20 +45,20 @@ train:
   precision: bf16
   num_workers: 4
   steps: 40000
-  warmup_steps: 10000
+  warmup_steps: 5000
   peak_lr: 3.0e-4
   final_lr: 3.0e-7
   weight_decay: 0.01
   betas: [0.9, 0.95]
-  sampling_horizon: 3
+  sampling_horizon: 4
   tactile_lr_scale: 0.1
   log_every: 20
-  eval_every: 10000
+  eval_every: 5000
   eval_start: 0
   val_batches: 8
   eval_action_mse: true
   val_action_windows: 4
-  val_plan_horizon: 3
+  val_plan_horizon: 4
   val_plan_sigma: 0.1
   save_every: 2000
   seed: 42
@@ -71,7 +71,7 @@ wandb:
 
 planning:
   freq: 6
-  horizon_s: 2
+  horizon_s: 4
   particles: 36
   iters: 10
   elites: 5

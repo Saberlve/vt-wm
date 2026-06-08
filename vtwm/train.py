@@ -62,9 +62,10 @@ def evaluate(core, vision, val_loader, device, n_batches, amp=False):
 @torch.no_grad()
 def action_mse_eval(core, vision, val_loader, device, n_windows, cfg, amp=False):
     """Policy-quality metric: the world model has no action output, so we recover one with
-    CEM planning. For each val window, plan the last H action steps to reach the window's
-    final visual latent (goal), then MSE the planned sequence against the demonstrated GT
-    actions. Returns mean per-window action MSE over up to `n_windows` windows.
+    CEM planning. For each val window, plan H action steps to reach the EPISODE's final visual
+    latent (the demonstrated task goal, matching deploy frame: -1), then MSE the planned
+    sequence against the demonstrated GT actions. Returns mean per-window action MSE over up to
+    `n_windows` windows.
     """
     core.eval()
     predictor, tactile = core.predictor, core.tactile
@@ -77,6 +78,8 @@ def action_mse_eval(core, vision, val_loader, device, n_windows, cfg, amp=False)
         if n >= n_windows:
             break
         s = vision.encode(batch["rgb"].to(device))            # (B,T,16,12,20)
+        # Goal latent = the episode's final frame (task-completion state), NOT s[:, H].
+        s_goal = vision.encode(batch["goal_rgb"].unsqueeze(1).to(device))[:, 0]  # (B,16,12,20)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp):
             t = tactile.encode(batch["tactile"].to(device))   # (B,T,4,196,768)
             a = batch["action"].to(device)                    # (B,T,chunk,dim)
@@ -84,14 +87,14 @@ def action_mse_eval(core, vision, val_loader, device, n_windows, cfg, amp=False)
             H = min(H_cfg, T - 1)
             if H < 1:
                 continue
-            # Single-frame cold start (matches sampling_loss / deploy): imagine H steps from frame 0,
-            # so the goal is the GT visual latent H steps ahead and the GT actions drive frames 0..H-1.
+            # Single-frame cold start (matches sampling_loss / deploy): imagine H steps from frame 0
+            # toward the episode-final goal latent; the GT actions drive frames 0..H-1.
             for b in range(B):
                 if n >= n_windows:
                     break
                 gt_act = a[b, 0:H]                             # (H,chunk,dim): drives frames 0..H-1
                 best_action, _ = cem_plan(
-                    predictor, s[b : b + 1, :1], t[b : b + 1, :1], s[b, H : H + 1],
+                    predictor, s[b : b + 1, :1], t[b : b + 1, :1], s_goal[b : b + 1],
                     horizon=H, action_chunk=cfg.data.action_chunk, action_dim=cfg.data.action_dim,
                     particles=int(pcfg.get("particles", 36)), iters=int(pcfg.get("iters", 10)),
                     elites=int(pcfg.get("elites", 5)), max_context=int(pcfg.get("max_context", 9)),

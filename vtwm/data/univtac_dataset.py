@@ -333,10 +333,17 @@ class UniVTACDataset(Dataset):
             act.append(np.stack(chunk, 0))           # (action_chunk, A)
         act = np.stack(act, 0).astype(np.float32)    # (T, action_chunk, A)
 
+        # Goal frame = the EPISODE's final frame (the demonstrated task-completion state), NOT the
+        # window's last frame. This matches the closed-loop deploy convention (deploy.yml goal
+        # frame: -1) so CEM plans toward the true task goal during both training-val action_mse and
+        # the open-loop eval, instead of toward a nearby intra-window frame. -> (3,H,W).
+        goal_rgb = self._rgb_at(h, length - 1).astype(np.float32)
+
         return {
             "rgb": torch.from_numpy(rgb),
             "tactile": tac,
             "action": torch.from_numpy(act),
+            "goal_rgb": torch.from_numpy(goal_rgb),
             "task": self.task_name,
             "episode": int(ei),
             "frame0": int(start),
