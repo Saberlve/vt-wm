@@ -1,0 +1,40 @@
+# VT-WM world-model policy for closed-loop UniVTAC evaluation.
+# Plugs into scripts/eval_policy.py: each env step we encode the live observation, run CEM
+# planning in VT-WM imagination toward a goal latent, and execute the first planned joint qpos.
+policy_name: VTWM
+seed: 0
+# VT-WM is goal-image conditioned, not language conditioned -> no instruction file (mirrors the
+# 'Empty' instruction path in scripts/eval_policy.py). Without this the eval tries to load a
+# nonexistent instructions/<task>.json and crashes before the loop starts.
+instruction_type: seen
+instuction_file: null
+
+# vt-wm repo + checkpoint. `vtwm_repo: null` -> auto-resolve to the repo root that contains
+# this UniVTAC checkout (…/vt-wm). Paths below are resolved relative to vtwm_repo.
+vtwm_repo: null
+vtwm_config: configs/univtac_a100.yaml   # match the a100-trained model's data/arch params (tactile_stride=5, action_chunk=10, etc.)
+ckpt: runs/univtac/predictor.pt
+# Inference device. The launcher exposes the two chosen cards as CUDA_VISIBLE_DEVICES="RENDER,
+# MODEL": Isaac Sim's RTX renderer/PhysX take visible cuda:0 (usdrt only supports cuda:0) and
+# this policy takes visible cuda:1, so the heavy Vulkan render and the CEM CUDA inference run on
+# different physical cards (the deadlock class seen in RMBench). VTWM_DEVICE overrides this.
+device: cuda:1
+
+# Goal latent = encoded final head-camera frame of a reference expert episode.
+goal:
+  data_root: null        # null -> cfg.data.data_root (the task's episode store)
+  episode_index: 0       # which episode under data_root
+  frame: -1              # which frame to use as the goal (last frame by default)
+
+# CEM planning, aligned with configs/univtac_a100.yaml (planning block + train.val_plan_sigma_step).
+# horizon is set to the trained imagination depth (sampling_horizon=4), NOT the full
+# freq*horizon_s=24 window: the model is only trained to imagine 4 autoregressive steps, so the
+# CEM cost (evaluated on the final imagined latent) is only reliable up to ~4 steps.
+planning:
+  horizon: 4             # = a100 train.sampling_horizon (trained imagination depth)
+  exec_steps: 4          # execute all H planned steps open-loop before replanning (1 = pure MPC)
+  particles: 36
+  iters: 10
+  elites: 5
+  qpos_sigma_step: 0.002  # = a100 train.val_plan_sigma_step (per-step |Δqpos|, ramped by cumulative steps)
+  max_context: 9         # rolling latent context cap

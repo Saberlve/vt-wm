@@ -1,0 +1,21 @@
+save_dir: ./data
+
+decimation: 1
+
+save_frequency: 1
+video_frequency: 1
+render_frequency: 0
+record_pre_move_video: false
+
+random_texture: false
+
+use_seed: true
+episode_num: 5
+
+sensor_type: gsmini
+
+observations:
+  camera: ['rgb']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true

@@ -1,0 +1,40 @@
+# VT-WM closed-loop deployment for the lift_bottle task.
+# Uses the lift_bottle-trained predictor (runs/univtac_lift_bottle/predictor.pt).
+policy_name: VTWM
+seed: 0
+instruction_type: seen
+instuction_file: null
+
+vtwm_repo: null
+vtwm_config: configs/univtac_lift_bottle_ada.yaml
+ckpt: /home/wangshuxun/VLA/vt-wm/runs/univtac_lift_bottle/predictor.pt
+device: cuda:1
+
+goal:
+  data_root: null
+  episode_index: 0
+  frame: -1
+
+rgb_domain:
+  # The clean UniVTAC HDF5 frames were JPEG-encoded through OpenCV from raw Isaac RGB tensors.
+  # Mapping live renderer frames through this convention and matching dataset statistics keeps
+  # the Cosmos encoder input in-domain for the lift_bottle-trained VT-WM.
+  channel_order: bgr
+  match_dataset_stats: true
+  source_stats: ema
+  ema_decay: 0.95
+  max_episodes: 8
+  max_frames: 512
+  sample_stride: 10
+
+planning:
+  # Plan the trained imagination depth (a100 train.sampling_horizon=4), NOT the full 24-step
+  # window: the model is only trained to imagine 4 autoregressive steps, and the qpos_sigma ramp
+  # is only valid over that span. Execute all 4 chunks open-loop, then replan.
+  horizon: 4
+  exec_steps: 4
+  particles: 36
+  iters: 10
+  elites: 5
+  qpos_sigma_step: 0.002  # = train val_plan_sigma_step (per-step |Δqpos|, ramped by cumulative steps)
+  max_context: 9

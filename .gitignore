@@ -4,7 +4,10 @@ __pycache__/
 *.pyc
 
 # Third-party dependencies
-third_party/
+third_party/*
+!third_party/UniVTAC/
+third_party/UniVTAC/eval_result/
+third_party/UniVTAC/third_party/
 
 # Dependency cache
 .univtac_pydeps/

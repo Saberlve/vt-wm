@@ -15,6 +15,9 @@ CKPT="${CKPT:-runs/univtac_lift_bottle/predictor.pt}"
 OUT_DIR="${OUT_DIR:-eval_out_openloop_univtac_lift_bottle}"
 SPLIT="${SPLIT:-train}"
 NUM_WINDOWS="${NUM_WINDOWS:-6}"
+# CEM mean seed: "pose" = single current pose broadcast over the horizon (matches train/deploy
+# cold start; keyframe 0 is actually planned, not frozen to GT). "zero" = unit-std prior.
+MU_INIT="${MU_INIT:-pose}"
 
 exec "${PYTHON_BIN}" -m vtwm.openloop_eval \
   --config "${CONFIG}" \
@@ -22,4 +25,5 @@ exec "${PYTHON_BIN}" -m vtwm.openloop_eval \
   --out_dir "${OUT_DIR}" \
   --split "${SPLIT}" \
   --num_windows "${NUM_WINDOWS}" \
+  --mu_init "${MU_INIT}" \
   "$@"

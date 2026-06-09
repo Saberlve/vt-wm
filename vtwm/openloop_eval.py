@@ -10,7 +10,8 @@ the question the closed-loop wandering really hinges on:
 
 For each selected window it reproduces the EXACT training/deploy cold-start CEM regime
 (single-frame context, goal = the EPISODE's final visual latent (deploy frame: -1), mu_init =
-the first GT action chunk, sigma_init = qpos_sigma) and writes, per window:
+the single current pose broadcast over the horizon, sigma_init = the qpos_sigma ramp) and
+writes, per window:
 
   - actions.npz / action plot : the demonstrated GT action chunks vs the CEM-sampled chunks,
                                 plus the per-window action MSE (the headline open-loop metric);
@@ -150,8 +151,9 @@ def main():
                     help="planned horizon in ~6Hz steps; 0 = use (window_T - ctx)")
     ap.add_argument("--eval_T", type=int, default=0,
                     help="window length; 0 = cfg.data.T. Larger gives a longer plan horizon / GT-action span (goal is always the episode final frame).")
-    ap.add_argument("--mu_init", choices=["first_action", "zero"], default="first_action",
-                    help="CEM mean seed: the first GT action chunk (abs qpos prior, matches train) or zeros")
+    ap.add_argument("--mu_init", choices=["pose", "zero"], default="pose",
+                    help="CEM mean seed: the single current pose broadcast over the horizon "
+                         "(abs qpos prior, matches train/deploy cold start) or zeros")
     ap.add_argument("--scan", type=int, default=160, help="candidate windows scanned for RGB motion")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--fps", type=int, default=3)
@@ -250,12 +252,16 @@ def main():
             gt_act = act[0, ctx - 1:ctx - 1 + H]          # (H,chunk,dim): drives frames (ctx-1)..(ctx-1+H-1)
 
             # CEM plan from the single context frame toward the goal latent (train/deploy regime).
-            if args.mu_init == "first_action":
-                mu_init = gt_act[0]                        # (chunk,dim) abs qpos prior
-                # chunk seed -> the c offset cancels, so the std ramps along horizon only.
+            if args.mu_init == "pose":
+                # Deploy-faithful seed: a SINGLE current pose broadcast over all keyframes/chunks,
+                # NOT the GT keyframe-0 chunk (that leaks the answer and, with a near-zero h=0 std,
+                # pins keyframe 0 to GT -> action_mse trivially 0 there). Every (keyframe, chunk)
+                # position drifts from the seed, so the std ramps along BOTH axes
+                # (chunk_accumulate=True). Mirrors action_mse_eval in train.py.
+                mu_init = gt_act[0, 0]                     # (dim,) current pose, broadcast in cem
                 sigma_init = qpos_sigma_ramp(
                     H, action_chunk, action_dim, qpos_sigma, frame_stride,
-                    device=device, chunk_accumulate=False)
+                    device=device, chunk_accumulate=True)
             else:
                 mu_init = None                            # zero seed -> unit-std prior (cem default)
                 sigma_init = None

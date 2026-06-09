@@ -1,0 +1,26 @@
+# VT-WM closed-loop deployment for the insert_HDMI task.
+policy_name: VTWM
+seed: 0
+instruction_type: seen
+instuction_file: null
+
+vtwm_repo: null
+vtwm_config: configs/univtac_insert_hdmi_ada.yaml
+ckpt: runs/univtac/predictor.pt
+device: cuda:1
+
+goal:
+  data_root: null
+  episode_index: 0
+  frame: -1
+
+planning:
+  # = train sampling_horizon (insert_hdmi=3): only imagine the trained depth; the qpos_sigma ramp
+  # is valid over that span. Execute all 3 chunks open-loop, then replan.
+  horizon: 3
+  exec_steps: 3
+  particles: 36
+  iters: 10
+  elites: 5
+  qpos_sigma_step: 0.002  # per-step |Δqpos|, ramped by cumulative steps (TODO: measure on insert_hdmi)
+  max_context: 9
