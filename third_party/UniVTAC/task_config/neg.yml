@@ -1,0 +1,26 @@
+save_dir: ./data
+
+decimation: 1
+
+save_frequency: 2
+video_frequency: 2
+render_frequency: 0 # set to 1 to open one IsaacSim App window
+
+random_texture: false
+
+use_seed: true
+# With save_all, episode_num counts *saved* episodes (mostly failures), not successes.
+episode_num: 200
+
+# --- counterexample / negative collection ---
+save_all: true            # keep every non-erroring attempt regardless of check_success
+neg_noise_scale: 1.0      # global multiplier on injected action-target perturbations
+neg_drop_prob: 0.25       # chance of a mid-lift gripper release (bottle drops)
+
+sensor_type: gsmini
+
+observations:
+  camera: ['rgb']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true

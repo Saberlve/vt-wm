@@ -11,6 +11,7 @@ class Task(BaseTask):
         super().__init__(cfg, mode, render_mode, **kwargs)
     
     def create_actors(self):
+        # 创建了桌子上的墙壁和瓶子
         wall_pose = Pose([0.75, 0.0, 0.005], [1, 0, 0, 0])
         bottle_pose = wall_pose.add_bias([-0.08, 0.0, 0.03])
 
@@ -38,6 +39,7 @@ class Task(BaseTask):
         target_pose = bottle_pose.add_bias([-0.13, 0, -0.015])
         target_mat = target_pose.to_transformation_matrix()
         self.grasp_noise = self.create_noise(euler=[0, [-np.pi/12, 0.0], 0])
+        # 计算抓取位姿
         target_pose = construct_grasp_pose(
             target_pose.p,
             target_mat[:3, 2],
@@ -47,6 +49,7 @@ class Task(BaseTask):
             pose=target_pose,
             type='contact'
         )
+        # 移动机器人到抓取位姿附近
         self.move(self.atom.grasp_actor(
             self.bottle,
             contact_point_id=grasp_idx,
@@ -56,8 +59,11 @@ class Task(BaseTask):
         self.target_pose = self.wall.get_pose().add_bias([-0.08, 0, 0])
         
     def _play_once(self):
+        # 闭合夹爪， 其中atom是高层原子动作，给出的是位姿； 由curobo求解出关节角，执行实际的动作
         self.move(self.atom.close_gripper())
+        # 旋转瓶子
         self.gripper_rotate(self.bottle, 70/180*np.pi, steps=4)
+        # 如果中间状态不好，就调整一下
         if not self.check_mid_success():
             self.move(self.atom.move_by_displacement(
                 rpy=[0, np.pi/6, 0], rpy_coord='gripper'
@@ -65,7 +71,9 @@ class Task(BaseTask):
             self.move(self.atom.move_by_displacement(
                 x = self.target_pose[0] - self.bottle.get_pose()[0] + 0.02
             ), time_dilation_factor=0.5)
+        # 张开夹爪
         self.move(self.atom.open_gripper(0.5))
+        # 等待
         self.delay(30, is_save=False)
 
     def check_mid_success(self):

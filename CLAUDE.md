@@ -114,7 +114,17 @@ Sparsh force-field decoder) — on the cluster these live under `/run/determined
   R/B-swapped (live deploy obs must R/B-swap to match), and `insert_HDMI` data covers only the
   final 1.5cm insertion push (too narrow for CEM closed-loop).
 
-## Closed-loop deploy (`third_party/UniVTAC/policy/VTWM/deploy_policy.py`)
+## The UniVTAC benchmark (`third_party/UniVTAC/`)
+
+The full **UniVTAC** Isaac Sim / Isaac Lab simulation benchmark (arXiv:2602.10093) is now
+vendored in-tree under `third_party/UniVTAC/` (gitignored, `sys.path`-injected — not installed).
+It generates scripted expert demos, trains visuotactile policies, and runs closed-loop in-sim
+eval; tactile comes from a UIPC/TacEx deformable sim of GelSight-Mini sensors. **It has its own
+`third_party/UniVTAC/CLAUDE.md`** — read that for the benchmark's tasks (`envs/`), drivers
+(`scripts/`), Atom scripting DSL, HDF5 episode format, and `BasePolicy` interface. The VT-WM
+world model plugs in as one policy under `policy/VTWM/`; everything below is that integration.
+
+### Closed-loop deploy (`third_party/UniVTAC/policy/VTWM/deploy_policy.py`)
 
 A `BasePolicy` wrapper run in-process by UniVTAC's Isaac Sim `scripts/eval_policy.py`. It
 imports `vtwm` from the repo root (+ `.univtac_pydeps` for vendored pure-python deps), encodes
@@ -131,4 +141,5 @@ entrypoints (`det_eval_*`) additionally synthesize a Vulkan ICD pointing at `lib
 because the system ICD fails `vkCreateInstance` in the headless container.
 
 `third_party/` (UniVTAC, sparsh-orig, vjepa2, curobo, IsaacLab) is gitignored and added to
-`sys.path` at runtime rather than installed.
+`sys.path` at runtime rather than installed. The UniVTAC episode HDF5 produced by the benchmark's
+collection drivers is what `vtwm/data/univtac_dataset.py` consumes for training.

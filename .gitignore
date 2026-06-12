@@ -17,7 +17,7 @@ third_party/UniVTAC/third_party/
 
 # Evaluation outputs
 eval_out*/
-
+*videos/
 # Training logs & runs
 logs/
 runs/

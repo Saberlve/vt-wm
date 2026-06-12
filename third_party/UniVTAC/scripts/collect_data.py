@@ -51,6 +51,7 @@ args_cli = parser.parse_args()
 if args_cli.gpu is not None:
     os.environ['CUDA_VISIBLE_DEVICES'] = args_cli.gpu
 
+# 启动issac lab
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
 
@@ -103,10 +104,15 @@ def log(msg):
         f.write(msg + '\n')
     print(msg)
 
-def run(task: 'BaseTask', episode_num, use_seed, start_seed, max_seed):
+def run(task: 'BaseTask', episode_num, use_seed, start_seed, max_seed, save_all=False):
     suc_num, seed = 0, 0
     suc_map = []
-    
+    # When save_all is set, every non-erroringattempt is kept regardless of check_success, 
+    # and the episode budget counts *saved*  episodes (mostly failures) 
+    # rather than successes. suc_map still records the true success/fail label per seed; 
+    # the budget is driven by saved hdf5 files.
+    saved_num = 0
+
     if start_seed != -1:
         seed = start_seed
         log(f"Starting from seed {seed}.")
@@ -118,42 +124,59 @@ def run(task: 'BaseTask', episode_num, use_seed, start_seed, max_seed):
             suc_num = sum([1 for s in suc_map if s == '1'])
             seed = len(suc_map)
             log(f"Use seed with {suc_num} successful episodes. Starting from seed {seed}.")
+        if save_all:
+            hdf5_dir = task.save_root / 'hdf5'
+            saved_num = len(list(hdf5_dir.glob('*.hdf5'))) if hdf5_dir.exists() else 0
+            log(f"save_all: resuming with {saved_num} saved episodes.")
+
+    def budget():
+        return saved_num if save_all else suc_num
 
     mean_steps = 0.0
-    while suc_num < episode_num and (max_seed == -1 or seed <= max_seed):
+    while budget() < episode_num and (max_seed == -1 or seed <= max_seed):
         try:
             start_t = time.perf_counter()
+            # 初始化环境，
             task.reset(seed=seed)
+            # 各个任务的play once
             task.play_once()
             cost_t = time.perf_counter() - start_t
         except Exception as e:
-            log(f"[{suc_num:<3d}] Seed {seed} failed with error: {traceback.format_exc()}")
+            log(f"[{budget():<3d}] Seed {seed} failed with error: {traceback.format_exc()}")
             suc_map.append('0')
             task.clean_cache(mean_steps=mean_steps, result='error')
         else:
-            if task.plan_success and task.check_success() and not task.check_early_stop():
+            is_success = task.plan_success and task.check_success() and not task.check_early_stop()
+            if is_success or save_all:
                 task.save_to_hdf5()
-                log(f"[{suc_num:<3d}] Seed {seed} success in {cost_t:.2f} s.\n"
+                label = 'success' if is_success else 'fail'
+                suc_map.append('1' if is_success else '0')
+                if is_success:
+                    suc_num += 1
+                    if mean_steps > 0:
+                        mean_steps = ((suc_num - 1) * mean_steps + task.step_count) / suc_num
+                    else:
+                        mean_steps = task.step_count
+                saved_num += 1
+                log(f"[{budget():<3d}] Seed {seed} saved ({label}) in {cost_t:.2f} s.\n"
                     f"steps: {task.step_count:<5d}, save frames: {task.save_count:<5d}.\n")
-                suc_num += 1
-                suc_map.append('1')
-                if mean_steps > 0: 
-                    mean_steps = ((suc_num - 1) * mean_steps + task.step_count) / suc_num
-                else:
-                    mean_steps = task.step_count
-                task.clean_cache(mean_steps=mean_steps, result='success')
+                task.clean_cache(mean_steps=mean_steps, result=label)
             else:
-                log(f"[{suc_num:<3d}] Seed {seed} failed in {cost_t:.2f} s.\n"
+                log(f"[{budget():<3d}] Seed {seed} failed in {cost_t:.2f} s.\n"
                     f"Plan {task.plan_success}, Check {task.check_success()}")
                 suc_map.append('0')
                 task.clean_cache(mean_steps=mean_steps, result='fail')
-        
+
         with open(task.save_root / 'suc_map.txt', 'w') as f:
             f.write(' '.join([s for s in suc_map]))
-        
+
         seed += 1
-    
-    log(f'Complete collection, success rate: {suc_num}/{seed} ({(suc_num / seed) * 100:.2f}%)')
+
+    if save_all:
+        log(f'Complete collection, saved {saved_num} episodes over {seed} seeds '
+            f'({suc_num} of them successful).')
+    else:
+        log(f'Complete collection, success rate: {suc_num}/{seed} ({(suc_num / seed) * 100:.2f}%)')
 
     task.close()
     simulation_app.close()
@@ -177,7 +200,7 @@ def main():
         "start_seed": start_seed,
         "max_seed": max_seed,
     })
-
+    # 加载任务模块和配置
     task_module = importlib.import_module(f"envs.{task_file_name}")
     env_cfg:'BaseTaskCfg' = task_module.TaskCfg()
     env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
@@ -189,9 +212,15 @@ def main():
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.random_texture = task_config.get("random_texture", False)
 
+    # Optional negative-collection knobs: only set those the task actually declares.
+    for k in ("neg_noise_scale", "neg_drop_prob"):
+        if k in task_config and hasattr(env_cfg, k):
+            setattr(env_cfg, k, task_config[k])
+
     env_cfg.scene.num_envs = 1
     
     init_start = time.perf_counter()
+    # 创建任务，包括场景，机器人，物体，相机，传感器
     task:'BaseTask' = task_module.Task(env_cfg, mode='collect')
     init_cost = time.perf_counter() - init_start
     
@@ -207,6 +236,7 @@ def main():
         use_seed=task_config.get("use_seed", True),
         start_seed=start_seed,
         max_seed=max_seed,
+        save_all=task_config.get("save_all", False),
     )
 
 if __name__ == "__main__":

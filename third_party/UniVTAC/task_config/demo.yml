@@ -1,10 +1,10 @@
 save_dir: ./data
 
-decimation: 1
+decimation: 1  # 控制频率比例，实际上的频率 = 120 / decimation
 
-save_frequency: 2
-video_frequency: 2
-render_frequency: 0 # set to 1 to one IsaacSim App window
+save_frequency: 2  # 每隔多少帧保存一次数据，实际上保存频率为 120 / decimation / save_frequency
+video_frequency: 2 # 每隔多少帧保存一次视频，实际上保存频率为 120 / decimation / video_frequency
+render_frequency: 0 # set to 1 to one IsaacSim App window, 渲染频率，0表示不渲染
 
 random_texture: false # set to true to enable random texture
 
@@ -14,7 +14,14 @@ episode_num: 5
 sensor_type: gsmini
 
 observations:
-  camera: ['rgb']
+  camera: ['rgb']  
+  # rgb:  gelsight 的仿真rgb图像
+  # rgb_marker:  gelsight 的仿真rgb图像，且在上面标记了接触点
+  # marker: 标记点的位移、运动场
+  # depth：触觉膜的深度图
+  # pose: 触觉传感器在机器人上的位姿， 7维
   tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  # joint: 机器人的关节角，臂7维+ 2维夹爪，由于是gripper，所以夹爪只用1维表示
+  # ee: 机器人的末端执行器位姿，7维
   embodiment: ['joint', 'ee']
   actor: true

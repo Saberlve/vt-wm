@@ -213,6 +213,7 @@ class BaseTask(UipcRLEnv):
 
         self._setup_save()
         self.rng = np.random.default_rng()
+        # 创建底层环境，使用UIPC 提供的TacEx，在Issac Lab中模拟软体（硅胶层）的形变
         super().__init__(cfg=cfg, render_mode=render_mode, **kwargs) # Full Render
 
         self.logger = logging.getLogger(name=self.__class__.__name__)
@@ -289,13 +290,14 @@ class BaseTask(UipcRLEnv):
         '''
             call once when initializing the environment
         '''
+        # 创建基础场景，包括机器人，桌面，光照
         self._setup_base_scene()
         self.scene.clone_environments(copy_from_source=False)
-        
+        # 任务自己的actor
         self._actor_manager = ActorManager(self)
         self.create_actors()
 
-        # add sensors
+        # add sensors management
         self._camera_manager = CameraManager(self.cfg.cameras, self)
         self._tactile_manager = TactileManager(self.cfg.robot.tactiles, self)
 
@@ -419,7 +421,7 @@ class BaseTask(UipcRLEnv):
                     f'Timeout: reset exceed time limit of {self.cfg.reset_time_limit} s, cost {reset_test_cost} s.'
                 )
         self._update_render()
-
+        # pre move, 针对特定的任务进行重写
         self.pre_move()
         self.in_pre_move = False
 
@@ -467,12 +469,17 @@ class BaseTask(UipcRLEnv):
         self.sim.pause()
 
     def _update_render(self):
+        # uipc软体渲染
         self.uipc_sim.update_render_meshes()
+        # issac sim渲染
         self.sim.render()
         
         dt = self.physics_dt * self.cfg.decimation * max(1, self.step_count - self.last_render)
+        # 更新 sensor data，比如camera
         self.scene.update(dt=dt)
+        # 更新物体状态
         self._actor_manager.update(dt=dt)
+        # 更新触觉传感器的状态
         self._tactile_manager.update(dt=dt, force_recompute=True)
  
         self.last_render = self.step_count
@@ -538,22 +545,24 @@ class BaseTask(UipcRLEnv):
             return 
         
         self.step_count += 1
-
+        # 判断是否需要保存，以及计算保存频率
         is_save = is_save and (not self.in_pre_move or self.cfg.record_pre_move_video) and (not self.mode == 'eval_test')
         save_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.save_frequency == 0)
         video_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.video_frequency == 0)
         render_freq = (self.cfg.render_frequency > 0 and self.step_count % self.cfg.render_frequency == 0)
-
+        # 把数据写入到仿真器中，之前的关节角等数据都还在buffer中
         self.scene.write_data_to_sim()
         for _ in range(self.cfg.decimation):
             self.sim.step(render=False)
-
+        # 如果这一帧要渲染，那么就先更新渲染器，把之前的动作都执行了，拿到最新的状态；
         if render_freq or (self.mode == 'collect' and is_save and save_freq) or (is_save and video_freq) \
             or (self.mode == 'eval' and not self.in_pre_move):
             self._update_render()
 
+        # 如果要保存，就读取obs
         obs = None
         if self.mode == 'collect' and is_save and save_freq:
+            # 根据配置读取相关字段
             obs = self._get_observations()
             self.save_observations(obs)
 
