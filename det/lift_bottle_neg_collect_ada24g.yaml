@@ -1,0 +1,47 @@
+# Determined experiment: 2-GPU UniVTAC lift_bottle_neg counterexample data collection on ada-24g.
+# Two parallel Isaac Sim collection workers (one per GPU) produce save_all negative episodes.
+name: vtwm_univtac_lift_bottle_neg_collect_ada24g_2gpu
+description: UniVTAC lift_bottle_neg counterexample collection — RESUME of missing seeds (GPU0 122-125, GPU1 145-150)
+workspace: RTX4090
+project: vt-wm
+entrypoint: /home/wangshuxun/VLA/vt-wm/scripts/det_collect_univtac_lift_bottle_neg_ada.sh
+max_restarts: 0
+
+resources:
+  resource_pool: ada-24g
+  slots_per_trial: 2
+  is_single_node: true
+  shm_size: 34359738368
+
+bind_mounts:
+  - host_path: /mount/HOME/wangshuxun
+    container_path: /home/wangshuxun
+  - host_path: /mount/NAS1/public
+    container_path: /run/determined/NAS1/public
+
+environment:
+  image: 10.130.130.5:8192/wangshuxun:ubuntu22-04-cuda12.8-v5-vulkan
+  environment_variables:
+    # RESUME: explicit per-worker seed ranges for the 10 seeds left after the
+    # timeout-killed first run (GPU0 collected 101-121, GPU1 collected 126-144).
+    # When RANGES is set the batch script ignores TOTAL/START_SEED/PER_GPU_WORKERS.
+    - RANGES=0:122-125 1:145-150
+    - GPUS=0,1
+    - NVIDIA_DRIVER_CAPABILITIES=all
+    - USER=wangshuxun
+    - PYTHONUNBUFFERED=1
+
+checkpoint_storage:
+  type: shared_fs
+  host_path: /mount/NAS1/public
+  storage_path: shuxun
+  save_experiment_best: 0
+  save_trial_best: 0
+  save_trial_latest: 0
+
+searcher:
+  name: single
+  metric: saved_episodes
+  max_length:
+    batches: 1
+  smaller_is_better: false

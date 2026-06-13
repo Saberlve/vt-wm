@@ -1,0 +1,27 @@
+save_dir: ./data
+
+decimation: 1  # 控制频率比例，实际上的频率 = 120 / decimation
+
+save_frequency: 2  # 每隔多少帧保存一次数据，实际上保存频率为 120 / decimation / save_frequency
+video_frequency: 2 # 每隔多少帧保存一次视频，实际上保存频率为 120 / decimation / video_frequency
+render_frequency: 0 # set to 1 to one IsaacSim App window，渲染频率，0表示不渲染
+
+random_texture: false
+
+use_seed: true
+episode_num: 1
+
+sensor_type: gsmini
+
+# 接触力记录（UIPC ContactSystemFeature）：每 force_frequency 个 sim 步查询一次
+# 逐顶点接触力，覆盖整个 episode（含 pre_move），保存到 <save_root>/force/<seed>.npz；
+# 定形状 summary 同时写入 HDF5 的 contact_force/* 组
+record_force: true
+force_frequency: 1
+save_failed_force: false
+
+observations:
+  camera: ['rgb']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true

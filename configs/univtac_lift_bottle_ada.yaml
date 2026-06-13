@@ -16,7 +16,9 @@ encoder:
 
 data:
   source: univtac
-  data_root: /run/determined/NAS1/public/wangshuxun/UniVTAC/lift_bottle/clean
+  # parent of {clean (success), neg (failure)} episode stores -> multi-task ConcatDataset.
+  # clean uses tactile group *_gsmini, neg uses *_tactile; each resolves its own per-subdir.
+  data_root: /run/determined/NAS1/public/wangshuxun/UniVTAC/lift_bottle
   camera: head
   tactile_keys: null
   tactile_image: rgb_marker
@@ -30,6 +32,9 @@ data:
   rgb_hw: [192, 320]
   tactile_hw: [224, 224]
   val_ratio: 0.05
+  # failure trajectories: all-in for dynamics coverage, never in val (action_mse plans toward
+  # an episode's final frame, which is a failure state for these -> would corrupt the metric).
+  train_only_tasks: [neg]
   max_episodes: null
 
 model:

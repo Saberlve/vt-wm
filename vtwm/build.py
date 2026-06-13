@@ -52,5 +52,7 @@ def build_dataset(cfg, val: bool = False) -> Dataset:
             tactile_num_frames=cfg.data.tactile_num_frames, tactile_stride=cfg.data.tactile_stride,
             val_ratio=cfg.data.get("val_ratio", 0.05), seed=cfg.train.seed,
             max_episodes=cfg.data.get("max_episodes", None),
+            train_only_tasks=(list(cfg.data.train_only_tasks)
+                              if cfg.data.get("train_only_tasks", None) else None),
         )
     raise ValueError(f"unknown data source: {src}")

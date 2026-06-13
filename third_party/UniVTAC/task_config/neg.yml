@@ -16,6 +16,8 @@ episode_num: 200
 save_all: true            # keep every non-erroring attempt regardless of check_success
 neg_noise_scale: 1.0      # global multiplier on injected action-target perturbations
 neg_drop_prob: 0.25       # chance of a mid-lift gripper release (bottle drops)
+neg_late_bad_prob: 0.5    # fraction of episodes that stay normal then turn bad (vs. bad immediately)
+neg_late_bad_steps: 20    # length of the normal prefix before a late-bad trajectory goes wrong
 
 sensor_type: gsmini
 

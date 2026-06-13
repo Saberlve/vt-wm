@@ -351,22 +351,47 @@ class UniVTACDataset(Dataset):
         }
 
 
-def make_univtac_dataset(data_root: str, val: bool = False, **kwargs):
+def make_univtac_dataset(
+    data_root: str,
+    val: bool = False,
+    train_only_tasks: Optional[List[str]] = None,
+    **kwargs,
+):
     """Build a single- or multi-task UniVTAC dataset.
 
     `data_root` may be a single episode dir (e.g. `.../grasp_classify/clean`) or a parent
     containing several `{task}/{config}` stores; in the latter case all tasks are
     concatenated for multi-task training.
+
+    `train_only_tasks` names stores that should contribute *all* their episodes to training
+    and never appear in validation (e.g. failure/negative trajectories: useful as dynamics
+    coverage for the world model, but meaningless for the goal-conditioned `val/action_mse`
+    proxy, which plans toward an episode's final frame). Such a task is built with
+    `val_ratio=0` (every episode -> train) and is dropped entirely when `val=True`.
     """
     tasks = find_task_dirs(data_root)
     assert tasks, f"no UniVTAC episode stores found under {data_root}"
+    train_only = set(train_only_tasks or ())
+
+    def _build(name: str, edir: str):
+        if name in train_only:
+            if val:
+                return None  # train-only store is excluded from validation
+            return UniVTACDataset(edir, val=False, task_name=name, **{**kwargs, "val_ratio": 0.0})
+        return UniVTACDataset(edir, val=val, task_name=name, **kwargs)
+
     if len(tasks) == 1:
         name, edir = tasks[0]
-        return UniVTACDataset(edir, val=val, task_name=name, **kwargs)
+        ds = _build(name, edir)
+        assert ds is not None, f"only task '{name}' is train-only but val=True was requested"
+        return ds
     subsets, used = [], []
     for name, edir in tasks:
         try:
-            subsets.append(UniVTACDataset(edir, val=val, task_name=name, **kwargs))
+            ds = _build(name, edir)
+            if ds is None:
+                continue
+            subsets.append(ds)
             used.append((name, edir))
         except Exception as e:  # noqa: BLE001
             print(f"[univtac] skip {name}: {type(e).__name__}: {str(e)[:80]}")

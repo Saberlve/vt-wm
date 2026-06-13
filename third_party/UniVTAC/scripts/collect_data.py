@@ -211,9 +211,12 @@ def main():
     env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.random_texture = task_config.get("random_texture", False)
+    env_cfg.record_force = task_config.get("record_force", False)
+    env_cfg.force_frequency = task_config.get("force_frequency", env_cfg.force_frequency)
+    env_cfg.save_failed_force = task_config.get("save_failed_force", False)
 
     # Optional negative-collection knobs: only set those the task actually declares.
-    for k in ("neg_noise_scale", "neg_drop_prob"):
+    for k in ("neg_noise_scale", "neg_drop_prob", "neg_late_bad_prob", "neg_late_bad_steps"):
         if k in task_config and hasattr(env_cfg, k):
             setattr(env_cfg, k, task_config[k])
 

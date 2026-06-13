@@ -196,6 +196,12 @@ class BaseTaskCfg(DirectRLEnvCfg):
     keep_contact: bool = False
     max_save_frames: int = 1000
 
+    # contact-force recording (UIPC ContactSystemFeature); independent of obs saving
+    record_force: bool = False
+    force_frequency: int = 1
+    force_map_size: tuple = (24, 32)
+    save_failed_force: bool = False
+
     # some filler values, needed for DirectRLEnv
     episode_length_s = 0
     action_space = 0
@@ -249,6 +255,11 @@ class BaseTask(UipcRLEnv):
         self._tactile_manager.setup()
         self._tactile_manager.set_debug_vis(self.cfg.debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
+
+        self.force_recorder = None
+        if self.cfg.record_force:
+            from .utils.contact_force import ForceRecorder
+            self.force_recorder = ForceRecorder(self)
     
     def load_robot_and_sensors(self, cfg:BaseTaskCfg):
         data_type = ["camera_depth", "tactile_rgb", "marker_rgb", "marker_motion"]
@@ -465,6 +476,9 @@ class BaseTask(UipcRLEnv):
         self.metadata = {}
         self.log = ''
 
+        if getattr(self, 'force_recorder', None) is not None:
+            self.force_recorder.reset()
+
     def pause(self):
         self.sim.pause()
 
@@ -554,6 +568,9 @@ class BaseTask(UipcRLEnv):
         self.scene.write_data_to_sim()
         for _ in range(self.cfg.decimation):
             self.sim.step(render=False)
+        # 接触力记录：独立于 is_save/in_pre_move 门控，覆盖含 pre_move 的整个 episode
+        if self.force_recorder is not None and self.step_count % self.cfg.force_frequency == 0:
+            self.force_recorder.record(self.step_count, self.atom_id, self.atom_tag, self.in_pre_move)
         # 如果这一帧要渲染，那么就先更新渲染器，把之前的动作都执行了，拿到最新的状态；
         if render_freq or (self.mode == 'collect' and is_save and save_freq) or (is_save and video_freq) \
             or (self.mode == 'eval' and not self.in_pre_move):
@@ -638,10 +655,16 @@ class BaseTask(UipcRLEnv):
             obs['tactile'] = self._tactile_manager.get_observations(self.cfg.obs_data_type['tactile'])
         if 'actor' in self.cfg.obs_data_type:
             obs['actor'] = self._actor_manager.get_observations()
+        if self.force_recorder is not None:
+            obs['contact_force'] = self.force_recorder.latest_summary()
         return obs
     
     def clean_cache(self, mean_steps:float=0.0, result:str=None):
         self.mean_steps = mean_steps
+        # 失败/出错的 episode 默认不保存力数据（成功的在 save_to_hdf5 里保存）
+        if self.force_recorder is not None and self.cfg.save_failed_force \
+            and result in ('fail', 'error') and not self.save_path.exists():
+            self.force_recorder.save(self.save_root / 'force' / f'{self.cfg.seed}.npz')
         if self.tmp_save_dir.exists():
             for f in self.tmp_save_dir.iterdir():
                 f.unlink()
@@ -657,6 +680,8 @@ class BaseTask(UipcRLEnv):
     def save_to_hdf5(self):
         self.save_path.parent.mkdir(parents=True, exist_ok=True)
         HDF5Handler().pkls_to_hdf5(self.tmp_save_dir, self.save_path)
+        if self.force_recorder is not None:
+            self.force_recorder.save(self.save_root / 'force' / f'{self.cfg.seed}.npz')
     
     def _save_metadata(self):
         if self.metadata_path.exists():

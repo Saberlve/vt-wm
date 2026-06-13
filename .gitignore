@@ -8,7 +8,7 @@ third_party/*
 !third_party/UniVTAC/
 third_party/UniVTAC/eval_result/
 third_party/UniVTAC/third_party/
-
+*.log
 # Dependency cache
 .univtac_pydeps/
 
